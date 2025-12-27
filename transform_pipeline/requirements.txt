@@ -1,0 +1,13 @@
+pandas
+numpy
+requests
+psycopg2-binary
+sqlalchemy
+python-dotenv
+pymongo
+apache-airflow-providers-pandas
+apache-airflow-providers-postgres
+apache-airflow-providers-mongo
+great-expectations
+scikit-learn
+

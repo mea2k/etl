@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    hostname: ${POSTGRES_HOST:-postgres}
+    environment:
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-airflow_db,orders_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+
+      # Переменные для инициализации БД Source
+      SOURCE_POSTGRES_DATABASE: ${SOURCE_POSTGRES_DATABASE}
+      SOURCE_POSTGRES_USER: ${SOURCE_POSTGRES_USER}
+      SOURCE_POSTGRES_PASSWORD: ${SOURCE_POSTGRES_PASSWORD}
+      SOURCE_POSTGRES_TABLE: ${SOURCE_POSTGRES_TABLE}
+      SOURCE_POSTGRES_WATERMARK_TABLE: ${SOURCE_POSTGRES_WATERMARK_TABLE}
+      SOURCE_POSTGRES_EXTRA: ${SOURCE_POSTGRES_EXTRA}
+
+      # Переменные для инициализации БД Target
+      TARGET_POSTGRES_DATABASE: ${TARGET_POSTGRES_DATABASE}
+      TARGET_POSTGRES_USER: ${TARGET_POSTGRES_USER}
+      TARGET_POSTGRES_PASSWORD: ${TARGET_POSTGRES_PASSWORD}
+      TARGET_POSTGRES_TABLE: ${TARGET_POSTGRES_TABLE}
+      TARGET_POSTGRES_WATERMARK_TABLE: ${TARGET_POSTGRES_WATERMARK_TABLE}
+      TARGET_POSTGRES_EXTRA: ${TARGET_POSTGRES_EXTRA}
+
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init/postgres-init/:/docker-entrypoint-initdb.d/:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      retries: 5
+      timeout: 10s
+
+  pgadmin:
+    image: dpage/pgadmin4:9.11
+    ports:
+      - 5050:80
+    environment:
+      # Required by pgAdmin
+      PGADMIN_DEFAULT_EMAIL: demo@example.com
+      PGADMIN_DEFAULT_PASSWORD: secret
+      # Don't require the user to login
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      # Don't require a "master" password after logging in
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+
+  airflow:
+    image: apache/airflow:2.11.0
+    depends_on:
+      - postgres
+    environment:
+      # Airflow core
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres/${AIRFLOW_POSTGRES_DATABASE:-airflow_db}
+      AIRFLOW__WEBSERVER__SECRET_KEY: test-secret-key
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      _PIP_ADDITIONAL_REQUIREMENTS: '-r /opt/airflow/requirements.txt'
+
+      # Переменные для инициализации Connections
+      # PostgreSQL Source
+      SOURCE_POSTGRES_HOST: ${SOURCE_POSTGRES_HOST}
+      SOURCE_POSTGRES_PORT: ${SOURCE_POSTGRES_PORT}
+      SOURCE_POSTGRES_DATABASE: ${SOURCE_POSTGRES_DATABASE}
+      SOURCE_POSTGRES_USER: ${SOURCE_POSTGRES_USER}
+      SOURCE_POSTGRES_PASSWORD: ${SOURCE_POSTGRES_PASSWORD}
+      SOURCE_POSTGRES_EXTRA: ${SOURCE_POSTGRES_EXTRA}
+ 
+      # PostgreSQL Target
+      TARGET_POSTGRES_HOST: ${TARGET_POSTGRES_HOST}
+      TARGET_POSTGRES_PORT: ${TARGET_POSTGRES_PORT}
+      TARGET_POSTGRES_DATABASE: ${TARGET_POSTGRES_DATABASE}
+      TARGET_POSTGRES_USER: ${TARGET_POSTGRES_USER}
+      TARGET_POSTGRES_PASSWORD: ${TARGET_POSTGRES_PASSWORD}
+      TARGET_POSTGRES_EXTRA: ${TARGET_POSTGRES_EXTRA}
+
+      # Переменные для очистки данных
+      QUALITY_SCORE_THRESHOLD: 80.0
+      MAX_REMOVAL_PERCENT: 20.0
+
+      # Environment
+      AIRFLOW_ENV: ${AIRFLOW_ENV:-dev}
+
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+      - ./config:/opt/airflow/config
+      - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+      - ./requirements.txt:/opt/airflow/requirements.txt:ro
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    entrypoint: /bin/bash
+    command: 
+      - -c
+      - |
+        pip install --no-cache-dir -r /opt/airflow/requirements.txt 2>/dev/null
+        airflow db migrate || airflow db init
+        python /opt/airflow/config/init_connections.py
+        airflow users create \
+          --username ${AIRFLOW_USER:-admin} \
+          --password ${AIRFLOW_PASSWORD:-admin} \
+          --role Admin \
+          --email admin@example.com \
+          --firstname Admin \
+          --lastname Admin
+        airflow webserver & 
+        airflow scheduler 
+
+volumes:
+  postgres_data:
