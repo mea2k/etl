@@ -564,6 +564,10 @@ def initialize_all_connections():
             'type': 'postgres',
             'env_prefix': 'TARGET_POSTGRES'
         },
+        'warehouse_postgres': {
+            'type': 'postgres',
+            'env_prefix': 'WAREHOUSE_POSTGRES'
+        },
     }
     
     # Инициализируем connections из ENV
