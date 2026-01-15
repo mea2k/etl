@@ -1,0 +1,67 @@
+# Dockerfile.airflow
+FROM apache/airflow:2.11.0-python3.10
+USER root
+
+# Установка системных зависимостей если нужны
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libpq-dev \
+    wget \
+    curl \
+    git \
+  	&& apt-get autoremove -yqq --purge \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+USER airflow
+
+RUN pip install --upgrade pip setuptools wheel
+
+# Создание необходимых директорий (будут созданы с правильными правами)
+RUN mkdir -p /opt/airflow/src && \
+		mkdir -p /opt/airflow/config && \
+		mkdir -p /opt/airflow/data/raw && \
+		mkdir -p /opt/airflow/data/processed && \
+		mkdir -p /opt/airflow/logs && \
+		mkdir -p /opt/airflow/plugins && \
+		chown -R airflow:root /opt/airflow/src /opt/airflow/config /opt/airflow/data /opt/airflow/logs /opt/airflow/plugins
+
+# Обновляем openlineage 
+RUN pip install --no-cache-dir --upgrade "openlineage-airflow>=1.8.0"
+
+# Копируем requirements.txt
+COPY requirements.txt /opt/airflow/requirements.txt	
+
+# Установка Python зависимостей 
+RUN pip install --no-cache-dir \
+        -r /opt/airflow/requirements.txt && \
+        rm /opt/airflow/requirements.txt
+
+# Устанавливаем Airflow providers (если не указаны в requirements.txt)
+RUN pip install --no-cache-dir \
+        apache-airflow-providers-apache-spark \
+		apache-airflow-providers-postgres \
+        apache-airflow-providers-mongo \
+        apache-airflow-providers-http
+    
+
+# Копирование исходного кода
+COPY config /opt/airflow/config/
+
+# Опционально: предустановленные переменные окружения
+ENV AIRFLOW_HOME=/opt/airflow	\
+		PYTHONPATH=/opt/airflow/src:$PYTHONPATH \
+		AIRFLOW__CORE__LOAD_EXAMPLES=False \
+		AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE=False \
+		AIRFLOW__CORE__EXECUTOR=LocalExecutor \
+		AIRFLOW__METRICS__TIMER_UNIT_CONSISTENCY=True
+
+WORKDIR /opt/airflow
+
+# Порт для веб-сервера
+EXPOSE 8080
+
+# Команда запуска (будет переопределена в docker-compose)
+CMD ["bash"]

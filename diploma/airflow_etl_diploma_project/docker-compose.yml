@@ -1,0 +1,282 @@
+version: '3.8'
+
+services:
+
+  # PostgreSQL Airflow Database
+  postgres-airflow:
+    image: postgres:15
+    hostname: ${AIRFLOW_POSTGRES_HOST:-postgres-airflow}
+    environment:
+      POSTGRES_USER: ${AIRFLOW_POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${AIRFLOW_POSTGRES_DB:-airflow_db}
+    ports:
+      - "${AIRFLOW_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_airflow_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_POSTGRES_USER:-airflow} -d ${AIRFLOW_POSTGRES_DB:-airflow_db}"]
+      interval: 10s
+      retries: 5
+      timeout: 10s
+      start_period: 20s
+    restart: always
+    networks:
+      - airflow-network
+
+  # PostgreSQL Source Database
+  postgres-source:
+    image: postgres:15
+    hostname: ${POSTGRES_SOURCE_HOST:-postgres-source}
+    environment:
+      POSTGRES_USER: ${POSTGRES_SOURCE_USER:-source_user}
+      POSTGRES_PASSWORD: ${POSTGRES_SOURCE_PASSWORD:-source_pass}
+      POSTGRES_DB: ${POSTGRES_SOURCE_DB:-source_db}
+    ports:
+      - "${POSTGRES_SOURCE_PORT:-5433}:5432"
+    volumes:
+      - postgres_source_data:/var/lib/postgresql/data
+      - ./init/init_source_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SOURCE_USER:-source_user} -d ${POSTGRES_SOURCE_DB:-source_db}"]
+      interval: 10s
+      retries: 5
+      timeout: 10s
+      start_period: 20s
+    restart: always
+    networks:
+      - airflow-network
+
+  # PostgreSQL Analytics Database
+  postgres-analytics:
+    image: postgres:15
+    hostname: ${POSTGRES_ANALYTICS_HOST:-postgres-analytics}
+    environment:
+      POSTGRES_USER: ${POSTGRES_ANALYTICS_USER:-analytics_user}
+      POSTGRES_PASSWORD: ${POSTGRES_ANALYTICS_PASSWORD:-analytics_pass}
+      POSTGRES_DB: ${POSTGRES_ANALYTICS_DB:-analytics_db}
+    ports:
+      - "${POSTGRES_ANALYTICS_PORT:-5434}:5432"
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+      - ./init/init_analytics_db.sql:/docker-entrypoint-initdb.d/01_init_analytics.sql
+      - ./init/init_dwh.sql:/docker-entrypoint-initdb.d/02_init_dwh.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_ANALYTICS_USER:-analytics_user} -d ${POSTGRES_ANALYTICS_DB:-analytics_db}"]
+      interval: 10s
+      retries: 5
+      timeout: 10s
+      start_period: 20s
+    restart: always
+    networks:
+      - airflow-network
+
+  # Web-based PostgreSQL admin tool
+  pgadmin:
+    image: dpage/pgadmin4:9.11
+    ports:
+      - 5050:80
+    environment:
+      # Required by pgAdmin
+      PGADMIN_DEFAULT_EMAIL: demo@example.com
+      PGADMIN_DEFAULT_PASSWORD: secret
+      # Don't require the user to login
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      # Don't require a "master" password after logging in
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    networks:
+      - airflow-network
+  
+  # MongoDB Database
+  mongo:
+    image: mongo:8
+    hostname: ${MONGO_HOST:-mongo}
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin}
+      MONGO_USERNAME: ${MONGO_USER:-admin}
+      MONGO_PASSWORD: ${MONGO_PASSWORD:-admin}
+      MONGO_DATABASE: ${MONGO_DATABASE:-feedback_db}
+      MONGO_COLLECTION: ${MONGO_COLLECTION:-feedback}
+    volumes:
+      - mongo_data:/data/db
+      - ./init/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    networks:
+      - airflow-network
+
+  # Web-based MongoDB admin tool
+  mongo-express:
+    image: mongo-express:1.0.2-20-alpine3.19
+    depends_on:
+      - mongo
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=${MONGO_HOST:-mongo}
+      - ME_CONFIG_MONGODB_PORT=${MONGO_PORT:-27017}
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_ROOT_USER:-admin}
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_ROOT_PASSWORD:-admin}
+      # доступ к web-интерфейсу
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin
+    ports:
+      - '5051:8081'
+    networks:
+      - airflow-network
+
+  # Simple FTP server
+  # ftp:
+  #   image: stilliard/pure-ftpd:hardened
+  #   hostname: ${FTP_HOST:-ftp}
+  #   ports:
+  #     - "${FTP_PORT:-21}:21"
+  #     - "30000-30009:30000-30009"
+  #   environment:
+  #     FTP_USER_NAME: ${FTP_USER:-user}
+  #     FTP_USER_PASS: ${FTP_PASSWORD:-user}
+  #     FTP_USER_HOME: /home/ftpuser
+  #   volumes:
+  #     - ftp_data:/home/ftpuser
+  #     - ./data/csv:/home/ftpuser
+  #   restart: always
+  #   networks:
+  #     - airflow-network
+
+  # Airflow Service
+  airflow:
+    #image: apache/airflow:2.11.0-python3.10
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    hostname: airflow
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    environment:
+      # Airflow core
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres-airflow/${AIRFLOW_POSTGRES_DATABASE:-airflow_db}
+      AIRFLOW__WEBSERVER__SECRET_KEY: test-secret-key
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__TEST_CONNECTION: 'true'
+      _PIP_ADDITIONAL_REQUIREMENTS: '-r /opt/airflow/requirements.txt'
+
+      # Переменные для инициализации Connections
+      # PostgreSQL Source
+      POSTGRES_SOURCE_HOST: ${POSTGRES_SOURCE_HOST}
+      POSTGRES_SOURCE_PORT: ${POSTGRES_SOURCE_PORT}
+      POSTGRES_SOURCE_DATABASE: ${POSTGRES_SOURCE_DATABASE}
+      POSTGRES_SOURCE_USER: ${POSTGRES_SOURCE_USER}
+      POSTGRES_SOURCE_PASSWORD: ${POSTGRES_SOURCE_PASSWORD}
+      POSTGRES_SOURCE_EXTRA: ${POSTGRES_SOURCE_EXTRA}
+
+      # PostgreSQL Analytics
+      POSTGRES_ANALYTICS_HOST: ${POSTGRES_ANALYTICS_HOST}
+      POSTGRES_ANALYTICS_PORT: ${POSTGRES_ANALYTICS_PORT}
+      POSTGRES_ANALYTICS_DATABASE: ${POSTGRES_ANALYTICS_DATABASE}
+      POSTGRES_ANALYTICS_USER: ${POSTGRES_ANALYTICS_USER}     
+      POSTGRES_ANALYTICS_PASSWORD: ${POSTGRES_ANALYTICS_PASSWORD}
+      POSTGRES_ANALYTICS_EXTRA: ${POSTGRES_ANALYTICS_EXTRA}
+
+      # MongoDB Source
+      MONGO_HOST: ${MONGO_HOST}
+      MONGO_PORT: ${MONGO_PORT}
+      MONGO_DATABASE: ${MONGO_DATABASE}
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_EXTRA: ${MONGO_EXTRA}
+
+      # FTP Server Source
+      FTP_HOST: ${FTP_HOST}
+      FTP_PORT: ${FTP_PORT}
+      FTP_USER: ${FTP_USER}
+      FTP_PASSWORD: ${FTP_PASSWORD}
+      FTP_PATH: ${FTP_PATH}
+      FTP_EXTRA: ${FTP_EXTRA}
+
+      # External API
+      API_URL: ${API_URL}
+      API_KEY: ${API_KEY}
+      API_TOKEN: ${API_TOKEN}
+      API_TIMEOUT: ${API_TIMEOUT}
+      API_EXTRA: ${API_EXTRA}
+
+    volumes:
+      # Папки с исходными кодами
+      - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+      #- ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+      - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+      - ${AIRFLOW_PROJ_DIR:-.}/scripts:/opt/airflow/scripts
+      # Папка с данными
+      - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
+      # Volume для логов Airflow
+      - airflow_logs:/opt/airflow/logs
+      # Файл с зависимостями Python (если запуск без сборки образа)
+      - ${AIRFLOW_PROJ_DIR:-.}/requirements.txt:/opt/airflow/requirements.txt:ro
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    entrypoint: /bin/bash
+    command: 
+      - -c
+      - |
+        # Устанавливаем зависимости
+        pip install --no-cache-dir -r /opt/airflow/requirements.txt 2>/dev/null || pip install --no-cache-dir -r /opt/airflow/requirements.txt
+        airflow db migrate || airflow db init
+
+        # Создание web-пользователя если не существует
+        if ! airflow users list 2>/dev/null | grep -q \"${AIRFLOW_USER:-admin}\"; then
+          echo "Creating Airflow user: ${AIRFLOW_USER:-admin}"
+          airflow users create \
+            --username ${AIRFLOW_USER:-admin} \
+            --password ${AIRFLOW_PASSWORD:-admin} \
+            --role Admin \
+            --email admin@example.com \
+            --firstname Admin \
+            --lastname Admin
+        else
+          echo "Airflow user: ${AIRFLOW_USER:-admin} already exists"
+        fi
+
+        # Инициализация Connections если файл существует
+        [ -f /opt/airflow/scripts/init_connections.py ] && python /opt/airflow/scripts/init_connections.py
+
+        # Запуск сервисов
+        airflow webserver & 
+        airflow scheduler 
+    restart: always
+    networks:
+      - airflow-network
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "${GF_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: always
+    networks:
+      - airflow-network
+
+volumes:
+  postgres_airflow_data:
+  postgres_source_data:
+  postgres_analytics_data:
+  mongo_data:
+  ftp_data:
+  airflow_logs:
+  grafana_data:
+
+networks:
+  airflow-network:
+    driver: bridge

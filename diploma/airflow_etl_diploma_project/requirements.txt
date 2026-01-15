@@ -1,0 +1,36 @@
+# Для работы с базами данных
+psycopg2-binary>=2.9.0
+sqlalchemy>=1.4.0,<2.0.0
+pymongo>=4.3.0,<5.0.0
+
+# Основные библиотеки для работы с данными
+pandas>=2.0.0,<2.2.0
+numpy>=1.24.0,<1.26.0
+scikit-learn>=1.2.0,<1.4.0
+
+# Для валидации данных
+great-expectations>=0.17.0,<0.19.0
+pydantic==2.5.3
+jsonschema==4.20.0
+
+# FTP
+paramiko==3.4.0
+
+# API requests
+requests>=2.28.0
+
+# Вспомогательные библиотеки
+python-dotenv>=0.21.0
+
+# Дополнительные библиотеки
+pyarrow>=9.0.0,<12.0.0
+
+# Генерация данных
+Faker==22.0.0
+
+# Airflow провайдеры
+apache-airflow-providers-apache-spark  # Этот пакет включает pandas поддержку
+apache-airflow-providers-postgres
+apache-airflow-providers-mongo
+apache-airflow-providers-ftp
+apache-airflow-providers-http

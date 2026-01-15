@@ -4,17 +4,83 @@
 
 ### Цель проекта
 
-Разработать ETL-pipeline на базе Apache Airflow для автоматизированного сбора, обработки и визуализации данных бизнес-процессов. Система должна ежедневно (в 9:00)собирать данные из различных источников, трансформировать их и загружать в аналитическую БД и хранилище данных (Data Warehouse) для последующей визуализации на дашборде.
+Разработать полноценный ETL-pipeline на базе Apache Airflow для автоматизированного сбора, обработки и визуализации данных бизнес-процессов. Система должна ежедневно (в 9:00) собирать данные из различных источников, трансформировать их и загружать в аналитическую БД и хранилище данных (Data Warehouse) для последующей визуализации на дашборде.
 
-#### Ключевые требования
+## Ключевые требования
 
-1. Хранилище данных (Data Warehouse) должно использовать стратегию **Slowly Changing Dimensions (SCD) Type 2** для отслеживания исторических изменений в таблицах измерений (dimensions). Это позволит сохранять полную историю изменений атрибутов и анализировать данные в контексте их исторического состояния.
+### 1. Data Warehouse с SCD Type 2
 
-2. **Безопасность подключений**: Все подключения к источникам данных должны осуществляться через **Airflow Connections**, а аутентификационные данные (логины, пароли, токены) должны передаваться через **переменные окружения (.env файл)**. Жесткое кодирование учетных данных в коде запрещено.
+Хранилище данных (Data Warehouse) должно использовать стратегию **Slowly Changing Dimensions (SCD) Type 2** для отслеживания исторических изменений в таблицах измерений (dimensions). Это позволит сохранять полную историю изменений атрибутов и анализировать данные в контексте их исторического состояния.
+
+**Что такое SCD Type 2?**
+
+**SCD Type 2** - это метод отслеживания изменений в измерениях, при котором:
+
+- При изменении атрибута создается НОВАЯ версия записи
+- Старая версия сохраняется и помечается как неактуальная
+- Каждая версия имеет период действия (effective_date, expiration_date)
+- Текущая версия имеет флаг is_current = TRUE
+
+**Пример:**
+
+```text
+Клиент переехал из Москвы в Санкт-Петербург 15.06.2025
+
+До изменения:
+customer_key | customer_id | city   | effective_date | expiration_date | is_current
+1001         | 123         | Москва | 2025-01-01     | 9999-12-31      | TRUE
+
+После изменения:
+customer_key | customer_id | city             | effective_date | expiration_date | is_current
+1001         | 123         | Москва           | 2025-01-01     | 2025-06-14      | FALSE  ← закрыта
+1125         | 123         | Санкт-Петербург  | 2025-06-15     | 9999-12-31      | TRUE   ← новая
+```
+
+**Преимущества:**
+
+- Полная история изменений
+- Анализ "как было" на любую дату
+- Точность исторических отчетов
+- Аудит изменений
+
+### 2. Безопасность подключений
+
+**Безопасность подключений**: Все подключения к источникам данных должны осуществляться через **Airflow Connections**, а аутентификационные данные (логины, пароли, токены) должны передаваться через **переменные окружения (.env файл)**. Жесткое кодирование учетных данных в коде запрещено.
+
+```python
+# НЕПРАВИЛЬНО - НИКОГДА ТАК НЕ ДЕЛАЙТЕ!
+conn = psycopg2.connect(
+    host='postgres',
+    user='user',
+    password='password123'  # ЖЕСТКИЙ КОД ПАРОЛЯ!
+)
+
+# ПРАВИЛЬНО
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+hook = PostgresHook(postgres_conn_id='postgres_source')
+conn = hook.get_conn()
+```
+
+**Требования:**
+
+1. Все пароли в файле `.env`
+2. `.env` добавлен в `.gitignore`
+3. Все подключения через Airflow Connections
+4. Использование Hooks (PostgresHook, MongoHook и т.д.)
+
+### 3. Минимум 3 источника данных
+
+Обязательные источники:
+
+1. **PostgreSQL** - транзакционная БД (заказы, клиенты)
+2. **MongoDB** - документо-ориентированная БД (отзывы)
+3. **CSV или FTP** - файловые источники (продукты, логи доставки)
+4. **REST API** - опционально (веб-аналитика)
 
 ---
 
-## 1. Описание предметной области
+## Описание предметной области
 
 Выберите одну из предметных областей или предложите свою:
 
@@ -39,21 +105,114 @@
 
 ---
 
-## 2. Описание архитектуры проекта
+## Архитектура проекта
 
-Создайте архитектурную диаграмму системы, включающую:
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                    ИСТОЧНИКИ ДАННЫХ                              │
+├──────────────┬──────────────┬──────────────┬────────────────────┤
+│  PostgreSQL  │   MongoDB    │   CSV/FTP    │     REST API       │
+│   (orders,   │  (feedback)  │  (products,  │ (web analytics)    │
+│  customers)  │              │  deliveries) │  [опционально]     │
+└──────┬───────┴──────┬───────┴──────┬───────┴────────┬───────────┘
+       │              │              │                │
+       └──────────────┴──────────────┴────────────────┘
+                              ↓
+       ┌────────────────────────────────────────────────────────┐
+       │           AIRFLOW DAG (запуск в 9:00 AM)               │
+       ├────────────────────────────────────────────────────────┤
+       │  EXTRACT  →  TRANSFORM  →  LOAD                        │
+       │  (извлечь)  (преобразовать)  (загрузить)               │
+       └──────────────────────┬─────────────────────────────────┘
+                              ↓
+       ┌────────────────────────────────────────────────────────┐
+       │               ЦЕЛЕВЫЕ ХРАНИЛИЩА                        │
+       ├──────────────────────┬─────────────────────────────────┤
+       │  Analytics DB        │    Data Warehouse               │
+       │  (агрегаты)          │    (детализация + SCD Type 2)   │
+       └──────────┬───────────┴─────────────┬───────────────────┘
+                  │                         │
+                  └───────────┬─────────────┘
+                              ↓
+                    ┌──────────────────────┐
+                    │    ВИЗУАЛИЗАЦИЯ      │
+                    │  Grafana / Superset  │
+                    └──────────────────────┘
+```
 
-### Компоненты
+---
 
-1. **Источники данных**: PostgreSQL, MongoDB, CSV/FTP, REST API _(минимум 3)_
-2. **Слой извлечения (Extract)**: классы Extractors под разные типы источников
-3. **Слой трансформации (Transform)**: очистка, валидация, агрегация
-4. **Слой загрузки (Load)**: в аналитическую БД и DWH
-5. **Apache Airflow**: оркестрация DAG
-6. **Хранилища**: аналитическая БД, Data Warehouse
-7. **Визуализация**: Grafana/Metabase/Superset
+## Структура проекта
 
-### Технологический стек
+```text
+airflow_etl_diploma_project/
+│
+├── dags/                             # DAG-файлы Apache Airflow
+│   ├── main_etl_dag.py               # Основной ETL DAG (9:00 AM)
+│   └── generate_test_data_dag.py     # Генерация тестовых данных
+│
+├── plugins/                          # Плагины и компоненты ETL
+│   │
+│   ├── extractors/                   # Извлечение данных
+│   │   ├── base_extractor.py         # Базовый класс
+│   │   ├── postgres_extractor.py     # PostgreSQL
+│   │   ├── mongo_extractor.py        # MongoDB
+│   │   ├── csv_extractor.py          # CSV файлы
+│   │   ├── ftp_extractor.py          # FTP сервер
+│   │   └── api_extractor.py          # REST API
+│   │
+│   ├── transformers/                 # Трансформация данных
+│   │   ├── base_transformer.py       # Базовый класс
+│   │   ├── data_cleaner.py           # Очистка (дубликаты, null)
+│   │   ├── data_validator.py         # Валидация (схема, диапазоны)
+│   │   ├── data_normalizer.py        # Нормализация (форматы)
+│   │   └── data_enricher.py          # Обогащение (доп. данные)
+│   │
+│   ├── loaders/                      # Загрузка данных
+│   │   ├── base_loader.py            # Базовый класс
+│   │   ├── analytics_loader.py       # В аналитическую БД
+│   │   ├── dwh_loader.py             # В DWH
+│   │   └── scd_type2_handler.py      # Обработчик SCD Type 2
+│   │
+│   ├── validators/                   # Валидаторы
+│   │   ├── schema_validator.py       # Проверка схемы
+│   │   └── quality_checker.py        # Качество данных
+│   │
+│   └── utils/                        # Утилиты
+│       ├── db_helpers.py
+│       ├── logger_config.py
+│       └── constants.py
+│
+├── init/                             # Скрипты инициализации БД
+│   ├── init_source_db.sql            # Инициализация источников
+│   ├── init_analytics_db.sql         # Аналитическая БД
+│   ├── init_dwh.sql                  # Data Warehouse (с SCD Type 2)
+│   └── create_views.sql              # Представления для отчетов
+│
+├── scripts/                          # Вспомогательные скрипты
+│   ├── setup_connections.py          # Настройка Airflow Connections
+│   ├── generate_sample_data.py       # Генерация тестовых данных
+│   └── check_data_quality.py         # Проверка качества
+│
+├── data/                             # Директории для данных
+│   ├── csv/                          # CSV файлы
+│   ├── ftp/                          # FTP файлы
+│   └── api/                          # Кеш API
+│
+├── config/                           # Конфигурация
+│   └── logging.conf
+│
+├── docker-compose.yml                # Docker Compose
+├── Dockerfile                        # Dockerfile для Airflow
+├── requirements.txt                  # Python зависимости для Dockerfile
+├── .env.example                      # Пример переменных окружения
+├── .gitignore                        # Git ignore
+└── README.md                         # Документация
+```
+
+---
+
+## Технологический стек
 
 - Python 3.10+
 - Apache Airflow 2.10+
@@ -65,49 +224,192 @@
 
 ---
 
-## 3. Описание структуры источников данных
+## Практическая часть
 
-### 3.1 PostgreSQL - Транзакционная база
+### Шаг 1: Настройка переменных окружения
 
-```sql
--- Таблица заказов
-CREATE TABLE orders (
-    order_id SERIAL PRIMARY KEY,
-    customer_id INTEGER NOT NULL,
-    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    total_amount DECIMAL(10, 2),
-    status VARCHAR(50),  -- pending, processing, shipped, delivered, cancelled
-    payment_method VARCHAR(50),
-    shipping_address TEXT
-);
+1. Скопируйте файл с примером:
 
--- Таблица клиентов
-CREATE TABLE customers (
-    customer_id SERIAL PRIMARY KEY,
-    first_name VARCHAR(100),
-    last_name VARCHAR(100),
-    email VARCHAR(255) UNIQUE,
-    phone VARCHAR(20),
-    city VARCHAR(100),
-    country VARCHAR(100)
-);
+    ```bash
+    cp .env.example .env
+    ```
+
+2. Отредактируйте `.env` и заполните **ВСЕ** переменные:
+
+    ```env
+    # PostgreSQL Source
+    POSTGRES_SOURCE_HOST=postgres-source
+    POSTGRES_SOURCE_PORT=5433
+    POSTGRES_SOURCE_DB=source_db
+    POSTGRES_SOURCE_USER=source_user
+    POSTGRES_SOURCE_PASSWORD=source_password
+
+    # PostgreSQL Analytics
+    POSTGRES_ANALYTICS_HOST=postgres-analytics
+    POSTGRES_ANALYTICS_PORT=5434
+    POSTGRES_ANALYTICS_DB=analytics_db
+    POSTGRES_ANALYTICS_USER=analytics_user
+    POSTGRES_ANALYTICS_PASSWORD=analytics_password
+
+    # MongoDB
+    MONGO_HOST=mongodb
+    MONGO_PORT=27017
+    MONGO_DB=source_mongo_db
+    MONGO_USER=mongo_user
+    MONGO_PASSWORD=mongo_password
+
+    # ... и т.д.
+    ```
+
+**ВАЖНО:**
+
+- НЕ коммитить `.env` в Git
+- Убедитесь, что `.env` в `.gitignore`
+
+### Шаг 2: Запуск Docker контейнеров
+
+```bash
+# Запуск всех сервисов
+docker compose up -d
+
+# Проверка статуса
+docker compose ps
+
+# Просмотр логов
+docker compose logs -f airflow
 ```
 
-### 3.2 MongoDB - Коллекция отзывов
+**Доступные сервисы:**
+
+- Airflow web-интерфейс: http://localhost:8080 (admin / admin)
+- PostgreSQL Source: localhost:5433
+- PostgreSQL Analytics: localhost:5434
+- PgAdmin4: http://localhost:5000
+- MongoDB: localhost:27017
+- Grafana: http://localhost:3000 (admin / admin)
+
+### Шаг 3: Инициализация баз данных
+
+Базы данных инициализируются автоматически при первом запуске через скрипты в `init/`:
+
+- `init_source_db.sql` - создает таблицы orders, customers
+- `init_analytics_db.sql` - создает daily_business_analytics
+- `init_dwh.sql` - создает DWH с SCD Type 2
+
+### Шаг 4: Настройка Airflow Connections
+
+**Автоматически:**
+
+```bash
+docker compose exec -i airflow python /opt/airflow/scripts/setup_connections.py
+```
+
+**Вручную через UI:**
+
+1. Откройте http://localhost:8080
+2. Admin → Connections
+3. Добавьте подключения:
+
+    **postgres_source:**
+    - Conn Id: `postgres_source`
+    - Conn Type: `Postgres`
+    - Host: `postgres-source`
+    - Schema: `source_db`
+    - Login: `source_user`
+    - Password: `<из .env>`
+    - Port: `5432`
+
+    **mongodb_conn:**
+    - Conn Id: `mongodb_conn`
+    - Conn Type: `MongoDB`
+    - Host: `mongodb`
+    - Schema: `feedback_db`
+    - Login: `mongo_user`
+    - Password: `<из .env>`
+    - Port: `27017`
+
+    **другие (при необходимости)**
+
+### Шаг 5: Запуск DAG
+
+1. Откройте Airflow UI: http://localhost:8080
+2. Найдите DAG `main_etl_pipeline`
+3. Включите DAG (toggle в позицию ON)
+4. Нажмите `"Trigger DAG"` для ручного запуска
+
+DAG будет автоматически запускаться каждый день в 9:00 AM.
+
+---
+
+## ETL Pipeline - Детальное описание
+
+### Фаза 1: EXTRACT (Извлечение)
+
+#### 1.1 PostgreSQL
+
+**Таблицы:**
+
+```sql
+-- orders: заказы с датой, суммой, статусом
+-- customers: клиенты с контактами и адресами
+-- order_items: позиции в заказах с товарами
+```
+
+**Стратегия извлечения:**
+
+```python
+# Инкрементальная загрузка по дате
+extractor = PostgresExtractor(conn_id='postgres_source')
+
+orders_df = extractor.extract_incremental(
+    table_name='orders',
+    date_column='order_date',
+    start_date='{{ ds }}',  # Airflow macro: execution date
+    end_date='{{ tomorrow_ds }}'  # Следующий день
+)
+```
+
+**Почему инкрементальная загрузка?**
+
+- Загружаем только новые данные
+- Экономим ресурсы
+- Быстрее выполняется
+
+#### 1.2 MongoDB
+
+**Коллекция: customer_feedback**
 
 ```json
 {
-  "_id": "ObjectId",
-  "customer_id": 12345,
-  "order_id": 67890,
+  "_id": "ObjectId(...)",
+  "customer_id": 123,
+  "order_id": 456,
   "rating": 4.5,
   "comment": "Отличный сервис!",
-  "feedback_date": "2025-12-30T10:30:00Z",
+  "feedback_date": "2025-01-13T14:30:00Z",
   "category": "delivery"
 }
 ```
 
-### 3.3 CSV - Справочник продуктов
+**Стратегия извлечения:**
+
+```python
+extractor = MongoExtractor(
+    conn_id='mongodb_conn',
+    database='feedback_db'
+)
+
+feedback_df = extractor.extract_by_date(
+    collection='customer_feedback',
+    date_field='feedback_date',
+    start_date=execution_date,
+    end_date=execution_date + timedelta(days=1)
+)
+```
+
+#### 1.3 CSV
+
+**Файл: products_YYYYMMDD.csv**
 
 ```csv
 product_id,product_name,category,price,stock_quantity
@@ -115,1834 +417,863 @@ product_id,product_name,category,price,stock_quantity
 2,iPhone 15,Electronics,1199.99,120
 ```
 
-### 3.4 REST API - Веб-аналитика
+**Стратегия:**
 
-```http
-GET /api/v1/analytics/daily-stats
+```python
+extractor = CSVExtractor(base_path='/opt/airflow/data/csv')
 
-Response:
-{
-  "date": "2025-12-30",
-  "page_views": 15234,
-  "unique_visitors": 8456,
-  "conversion_rate": 0.034
-}
+products_df = extractor.extract(
+    filename=f'products_{execution_date.strftime("%Y%m%d")}.csv'
+)
 ```
 
-### 3.5 FTP - Логи доставки
+#### 1.4 FTP
+
+**Файл: delivery_logs_YYYYMMDD.csv**
 
 ```csv
 delivery_id,order_id,courier_id,pickup_time,delivery_time,status
-1,1001,25,2025-12-30 09:00:00,2025-12-30 10:30:00,delivered
+1,1001,25,2025-01-13 09:00:00,2025-01-13 10:30:00,delivered
 ```
 
----
+### Фаза 2: TRANSFORM (Трансформация)
 
-## 4. Структура конечной таблицы для аналитика
+#### 2.1 Очистка данных (Data Cleaning)
 
-```sql
-CREATE TABLE daily_business_analytics (
-    id SERIAL PRIMARY KEY,
-    analytics_date DATE NOT NULL UNIQUE,
-    
-    -- Метрики заказов
-    total_orders INTEGER DEFAULT 0,
-    total_revenue DECIMAL(12, 2) DEFAULT 0,
-    avg_order_value DECIMAL(10, 2) DEFAULT 0,
-    
-    -- Статусы заказов
-    orders_pending INTEGER DEFAULT 0,
-    orders_processing INTEGER DEFAULT 0,
-    orders_shipped INTEGER DEFAULT 0,
-    orders_delivered INTEGER DEFAULT 0,
-    orders_cancelled INTEGER DEFAULT 0,
-    
-    -- Клиенты
-    unique_customers INTEGER DEFAULT 0,
-    new_customers INTEGER DEFAULT 0,
-    avg_customer_rating DECIMAL(3, 2) DEFAULT 0,
-    
-    -- Продукты
-    total_products_sold INTEGER DEFAULT 0,
-    top_category VARCHAR(100),
-    
-    -- Веб-метрики
-    total_page_views INTEGER DEFAULT 0,
-    unique_visitors INTEGER DEFAULT 0,
-    conversion_rate DECIMAL(5, 4) DEFAULT 0,
-    
-    -- Доставка
-    total_deliveries INTEGER DEFAULT 0,
-    avg_delivery_time_minutes INTEGER DEFAULT 0,
-    successful_delivery_rate DECIMAL(5, 4) DEFAULT 0,
-    
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+**Задачи:**
+
+- Удаление дубликатов
+- Обработка пропущенных значений
+- Удаление некорректных записей
+- Удаление выбросов
+
+<details>
+
+**<summary>Пример кода CLEAN</summary>**
+
+```python
+class DataCleaner(BaseTransformer):
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Удаление дубликатов
+        df = df.drop_duplicates(subset=['order_id'], keep='last')
+        
+        # Обработка null значений
+        df['phone'] = df['phone'].fillna('Unknown')
+        df['shipping_address'] = df['shipping_address'].fillna('N/A')
+        
+        # Удаление некорректных записей
+        df = df[df['total_amount'] > 0]
+        df = df[df['quantity'] > 0]
+        
+        # Удаление выбросов (сумма заказа > 1 млн - подозрительно)
+        df = df[df['total_amount'] < 1000000]
+        
+        return df
 ```
 
----
+</details>
 
-## 5. Структура Data Warehouse (схема "звезда")
+#### 2.2 Валидация (Data Validation)
 
-### Важно: Стратегия SCD Type 2
+**Задачи:**
 
-**Slowly Changing Dimensions (SCD) Type 2** - это метод отслеживания исторических изменений в измерениях. При изменении атрибута объекта (например, клиент переехал в другой город) создается новая версия записи с новым surrogate key, а старая версия помечается как неактуальная.
+- Проверка схемы данных
+- Проверка типов данных
+- Проверка диапазонов значений
+- Проверка форматов
 
-**Преимущества SCD Type 2:**
+<details>
 
-- Полная история изменений атрибутов
-- Возможность анализа "как было" на любую дату
-- Сохранение точности исторических отчетов
-- Аудит изменений данных
+**<summary>Пример кода VALIDATION</summary>**
 
-**Ключевые поля для SCD Type 2:**
+```python
+class DataValidator:
+    def validate_orders(self, df: pd.DataFrame) -> tuple:
+        """Возвращает (valid_df, invalid_df, errors)"""
+        errors = []
+        
+        # Проверка обязательных полей
+        required_fields = ['order_id', 'customer_id', 'total_amount']
+        for field in required_fields:
+            if field not in df.columns:
+                errors.append(f"Missing required field: {field}")
+        
+        # Проверка типов
+        if not pd.api.types.is_numeric_dtype(df['total_amount']):
+            errors.append("total_amount must be numeric")
+        
+        # Проверка диапазонов
+        invalid_amount = df[
+            (df['total_amount'] < 0) | (df['total_amount'] > 1000000)
+        ]
+        if len(invalid_amount) > 0:
+            errors.append(f"Found {len(invalid_amount)} records with invalid amount")
+        
+        # Проверка статусов
+        valid_statuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled']
+        invalid_status = df[~df['status'].isin(valid_statuses)]
+        
+        # Разделение на валидные и невалидные
+        valid_mask = (
+            df['total_amount'].between(0, 1000000) &
+            df['status'].isin(valid_statuses)
+        )
+        
+        valid_df = df[valid_mask]
+        invalid_df = df[~valid_mask]
+        
+        return valid_df, invalid_df, errors
+```
 
-- `effective_date` - дата начала действия записи
-- `expiration_date` - дата окончания действия (9999-12-31 для текущей)
-- `is_current` - флаг текущей версии (TRUE/FALSE)
+</details>
 
-**Пример изменения:**
+#### 2.3 Нормализация (Data Normalization)
+
+**Задачи:**
+
+- Приведение к единому формату
+- Стандартизация дат
+- Нормализация строк
+- Приведение числовых значений
+
+<details>
+
+**<summary>Пример кода NORMALIZAION</summary>**
+
+
+```python
+class DataNormalizer(BaseTransformer):
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Нормализация строк
+        df['country'] = df['country'].str.upper().str.strip()
+        df['city'] = df['city'].str.title().str.strip()
+        df['email'] = df['email'].str.lower().str.strip()
+        
+        # Нормализация телефонов (убрать все кроме цифр)
+        df['phone'] = df['phone'].str.replace(r'\D', '', regex=True)
+        
+        # Стандартизация дат
+        df['order_date'] = pd.to_datetime(df['order_date'])
+        df['order_date'] = df['order_date'].dt.tz_localize(None)
+        
+        # Округление цен
+        df['total_amount'] = df['total_amount'].round(2)
+        
+        return df
+```
+
+</details>
+
+#### 2.4 Обогащение (Data Enrichment)
+
+**Задачи:**
+
+- Добавление вычисляемых полей
+- Обогащение из справочников
+- Категоризация
+- Агрегации
+
+<details>
+
+**<summary>Пример кода ENRICH</summary>**
+
+```python
+class DataEnricher(BaseTransformer):
+    def transform(self, df: pd.DataFrame, products_df: pd.DataFrame = None) -> pd.DataFrame:
+        # Добавление временных характеристик
+        df['order_hour'] = df['order_date'].dt.hour
+        df['order_day_of_week'] = df['order_date'].dt.dayofweek
+        df['is_weekend'] = df['order_day_of_week'].isin([5, 6])
+        df['time_of_day'] = pd.cut(
+            df['order_hour'],
+            bins=[0, 6, 12, 18, 24],
+            labels=['Night', 'Morning', 'Afternoon', 'Evening']
+        )
+        
+        # Категоризация клиентов по сумме заказа
+        df['order_category'] = pd.cut(
+            df['total_amount'],
+            bins=[0, 1000, 5000, 10000, float('inf')],
+            labels=['Small', 'Medium', 'Large', 'VIP']
+        )
+        
+        # Обогащение из справочника продуктов
+        if products_df is not None:
+            df = df.merge(
+                products_df[['product_id', 'category', 'price']],
+                on='product_id',
+                how='left'
+            )
+        
+        # Расчет скидки
+        df['discount'] = (df['original_price'] - df['final_price']) / df['original_price']
+        df['discount_pct'] = (df['discount'] * 100).round(2)
+        
+        return df
+```
+
+</details>
+
+#### 2.5 Оценка качества (Data Quality Assessment)
+
+**Метрики качества:**
+
+<details>
+
+**<summary>Пример кода DATA_QUALITY</summary>**
+
+```python
+def assess_data_quality(df: pd.DataFrame) -> dict:
+    """Оценка качества данных."""
+    
+    total_records = len(df)
+    
+    quality_metrics = {
+        'total_records': total_records,
+        
+        # Completeness (полнота)
+        'completeness': {
+            field: (df[field].notna().sum() / total_records * 100)
+            for field in df.columns
+        },
+        
+        # Uniqueness (уникальность)
+        'uniqueness': {
+            'order_id': (df['order_id'].nunique() / total_records * 100),
+            'customer_id': (df['customer_id'].nunique() / total_records * 100)
+        },
+        
+        # Validity (валидность)
+        'validity': {
+            'valid_emails': (df['email'].str.match(r'^[\w\.-]+@[\w\.-]+\.\w+$').sum() / total_records * 100),
+            'valid_amounts': ((df['total_amount'] > 0).sum() / total_records * 100)
+        },
+        
+        # Consistency (консистентность)
+        'duplicates': df.duplicated(subset=['order_id']).sum(),
+        'null_values': df.isnull().sum().to_dict()
+    }
+    
+    return quality_metrics
+```
+
+</details>
+
+### Фаза 3: LOAD (Загрузка)
+
+#### 3.1 Загрузка в аналитическую БД
+
+**Таблица: daily_business_analytics**
+
+Эта таблица содержит АГРЕГИРОВАННЫЕ метрики за день.
+
+**Стратегия: UPSERT**
+
+<details>
+
+**<summary>Пример кода LOAD-UPSERT</summary>**
+
+```python
+def load_daily_analytics(df: pd.DataFrame, execution_date: date):
+    """Загрузка дневных метрик."""
+    
+    # Агрегация метрик за день
+    analytics = {
+        'analytics_date': execution_date,
+        'total_orders': len(df),
+        'total_revenue': df['total_amount'].sum(),
+        'avg_order_value': df['total_amount'].mean(),
+        
+        # По статусам
+        'orders_pending': len(df[df['status'] == 'pending']),
+        'orders_processing': len(df[df['status'] == 'processing']),
+        'orders_delivered': len(df[df['status'] == 'delivered']),
+        
+        # Клиенты
+        'unique_customers': df['customer_id'].nunique(),
+        'new_customers': calculate_new_customers(df, execution_date),
+        
+        # Средний рейтинг из feedback
+        'avg_customer_rating': calculate_avg_rating(execution_date)
+    }
+    
+    # UPSERT (INSERT ... ON CONFLICT UPDATE)
+    query = """
+    INSERT INTO daily_business_analytics (
+        analytics_date, total_orders, total_revenue, avg_order_value,
+        orders_pending, orders_processing, orders_delivered,
+        unique_customers, new_customers, avg_customer_rating
+    )
+    VALUES (
+        %(analytics_date)s, %(total_orders)s, %(total_revenue)s, %(avg_order_value)s,
+        %(orders_pending)s, %(orders_processing)s, %(orders_delivered)s,
+        %(unique_customers)s, %(new_customers)s, %(avg_customer_rating)s
+    )
+    ON CONFLICT (analytics_date) DO UPDATE SET
+        total_orders = EXCLUDED.total_orders,
+        total_revenue = EXCLUDED.total_revenue,
+        avg_order_value = EXCLUDED.avg_order_value,
+        orders_pending = EXCLUDED.orders_pending,
+        orders_processing = EXCLUDED.orders_processing,
+        orders_delivered = EXCLUDED.orders_delivered,
+        unique_customers = EXCLUDED.unique_customers,
+        new_customers = EXCLUDED.new_customers,
+        avg_customer_rating = EXCLUDED.avg_customer_rating,
+        updated_at = CURRENT_TIMESTAMP
+    """
+    
+    cursor.execute(query, analytics)
+    conn.commit()
+```
+
+</details>
+
+#### 3.2 Загрузка в Data Warehouse с SCD Type 2
+
+_Самая важная и сложная часть проекта!_
+
+##### Шаг 1: Загрузка измерения dim_customers (SCD Type 2)
+
+<details>
+
+**<summary>Пример кода</summary>**
+
+```python
+def load_dim_customers_scd2(customers_df: pd.DataFrame, effective_date: date):
+    """
+    Загрузка измерения клиентов с SCD Type 2.
+    
+    Логика:
+    1. Для каждого клиента получаем текущую версию (is_current=TRUE)
+    2. Сравниваем отслеживаемые атрибуты
+    3. Если изменились - закрываем старую версию и создаем новую
+    4. Если не изменились - ничего не делаем
+    5. Если клиент новый - создаем первую версию
+    """
+    tracked_attributes = ['city', 'country', 'email', 'phone']
+    
+    for _, customer in customers_df.iterrows():
+        customer_id = customer['customer_id']
+        
+        # Получение текущей версии
+        current_version = get_current_customer_version(customer_id)
+        
+        if current_version is None:
+            # НОВЫЙ КЛИЕНТ - создаем первую версию
+            insert_customer_version(
+                customer_id=customer_id,
+                attributes=customer,
+                effective_date=effective_date,
+                expiration_date=date(9999, 12, 31),
+                is_current=True
+            )
+            logger.info(f"Inserted NEW customer: {customer_id}")
+            
+        else:
+            # СУЩЕСТВУЮЩИЙ КЛИЕНТ - проверяем изменения
+            attributes_changed = False
+            
+            for attr in tracked_attributes:
+                if str(current_version[attr]) != str(customer[attr]):
+                    attributes_changed = True
+                    logger.info(
+                        f"Customer {customer_id}: {attr} changed "
+                        f"from '{current_version[attr]}' to '{customer[attr]}'"
+                    )
+                    break
+            
+            if attributes_changed:
+                # ИЗМЕНЕНИЯ ЕСТЬ - применяем SCD Type 2
+                
+                # 1. Закрываем текущую версию
+                close_customer_version(
+                    customer_key=current_version['customer_key'],
+                    expiration_date=effective_date - timedelta(days=1)
+                )
+                
+                # 2. Создаем новую версию
+                insert_customer_version(
+                    customer_id=customer_id,
+                    attributes=customer,
+                    effective_date=effective_date,
+                    expiration_date=date(9999, 12, 31),
+                    is_current=True
+                )
+                
+                logger.info(f"Applied SCD Type 2 for customer: {customer_id}")
+            else:
+                # НЕТ ИЗМЕНЕНИЙ - ничего не делаем
+                logger.debug(f"No changes for customer: {customer_id}")
+
+def get_current_customer_version(customer_id: int) -> dict:
+    """Получение текущей активной версии клиента."""
+    query = """
+    SELECT *
+    FROM dim_customers
+    WHERE customer_id = %s AND is_current = TRUE
+    LIMIT 1
+    """
+    cursor.execute(query, (customer_id,))
+    row = cursor.fetchone()
+    
+    if row:
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, row))
+    return None
+
+def close_customer_version(customer_key: int, expiration_date: date):
+    """Закрытие текущей версии клиента."""
+    query = """
+    UPDATE dim_customers
+    SET 
+        expiration_date = %s,
+        is_current = FALSE,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE customer_key = %s
+    """
+    cursor.execute(query, (expiration_date, customer_key))
+
+def insert_customer_version(
+    customer_id: int,
+    attributes: dict,
+    effective_date: date,
+    expiration_date: date,
+    is_current: bool
+):
+    """Вставка новой версии клиента."""
+    query = """
+    INSERT INTO dim_customers (
+        customer_id, first_name, last_name, email, phone,
+        city, country, customer_segment,
+        effective_date, expiration_date, is_current
+    )
+    VALUES (
+        %(customer_id)s, %(first_name)s, %(last_name)s, %(email)s, %(phone)s,
+        %(city)s, %(country)s, %(customer_segment)s,
+        %(effective_date)s, %(expiration_date)s, %(is_current)s
+    )
+    """
+    
+    params = {
+        'customer_id': customer_id,
+        'first_name': attributes['first_name'],
+        'last_name': attributes['last_name'],
+        'email': attributes['email'],
+        'phone': attributes['phone'],
+        'city': attributes['city'],
+        'country': attributes['country'],
+        'customer_segment': attributes.get('customer_segment', 'Regular'),
+        'effective_date': effective_date,
+        'expiration_date': expiration_date,
+        'is_current': is_current
+    }
+    
+    cursor.execute(query, params)
+```
+
+</details>
+
+##### Шаг 2: Загрузка фактов fact_orders
+
+**КРИТИЧЕСКИ ВАЖНО:** При загрузке фактов нужно получить правильный surrogate key измерения для ДАТЫ ЗАКАЗА.
+
+<details>
+
+**<summary>Пример кода</summary>**
+
+```python
+def load_fact_orders(orders_df: pd.DataFrame):
+    """
+    Загрузка фактов заказов.
+    Важно: используем customer_key который был активен на дату заказа!
+    """
+    for _, order in orders_df.iterrows():
+        order_date = order['order_date'].date()
+        
+        # Получение customer_key для ДАТЫ ЗАКАЗА
+        customer_key = get_customer_key_for_date(
+            customer_id=order['customer_id'],
+            as_of_date=order_date
+        )
+        
+        # Получение product_key для ДАТЫ ЗАКАЗА
+        product_key = get_product_key_for_date(
+            product_id=order['product_id'],
+            as_of_date=order_date
+        )
+        
+        # Получение date_key
+        date_key = int(order_date.strftime('%Y%m%d'))
+        
+        # Вставка факта
+        insert_fact_order(
+            order_id=order['order_id'],
+            customer_key=customer_key,
+            product_key=product_key,
+            date_key=date_key,
+            quantity=order['quantity'],
+            unit_price=order['unit_price'],
+            total_amount=order['total_amount'],
+            order_status=order['status']
+        )
+
+def get_customer_key_for_date(customer_id: int, as_of_date: date) -> int:
+    """
+    Получение customer_key для конкретной даты.    
+    Возвращает тот customer_key, который был активен на указанную дату.
+    Это КЛЮЧЕВАЯ функция для корректной работы SCD Type 2!
+    """
+    query = """
+    SELECT customer_key
+    FROM dim_customers
+    WHERE customer_id = %s
+      AND effective_date <= %s
+      AND expiration_date >= %s
+    LIMIT 1
+    """
+    cursor.execute(query, (customer_id, as_of_date, as_of_date))
+    result = cursor.fetchone()
+    if result:
+        return result[0]
+    else:
+        logger.error(
+            f"No customer_key found for customer_id={customer_id} on {as_of_date}"
+        )
+        raise ValueError(f"Customer key not found")
+```
+
+</details>
+
+**Пример работы SCD Type 2 при загрузке фактов:**
 
 ```text
-Клиент ID=123 переехал из Москвы в Санкт-Петербург 2025-06-15
+Ситуация:
+- Клиент ID=123 сделал заказ 01.06.2025
+- Клиент переехал 15.06.2025
+- Клиент сделал еще один заказ 20.06.2025
 
-До изменения:
-customer_key | customer_id | city            | effective_date | expiration_date | is_current
-1001        | 123         | Москва          | 2025-01-01    | 9999-12-31     | TRUE
+dim_customers:
+customer_key | customer_id | city   | effective_date | expiration_date | is_current
+1001         | 123         | Москва | 2025-01-01     | 2025-06-14      | FALSE
+1125         | 123         | СПб    | 2025-06-15     | 9999-12-31      | TRUE
 
-После изменения:
-customer_key | customer_id | city            | effective_date | expiration_date | is_current
-1001        | 123         | Москва          | 2025-01-01    | 2025-06-14     | FALSE
-1125        | 123         | Санкт-Петербург | 2025-06-15    | 9999-12-31     | TRUE
+fact_orders:
+fact_id | order_id | customer_key | order_date | ...
+100     | 5001     | 1001         | 2025-06-01 | ...  ← Привязан к Москве
+101     | 5002     | 1125         | 2025-06-20 | ...  ← Привязан к СПб
+
+Результат:
+- Первый заказ правильно показывает, что клиент был из Москвы
+- Второй заказ правильно показывает, что клиент уже из СПб
+- История сохранена корректно!
 ```
 
-### 5.1 Fact Table - Факты заказов
+---
+
+
+## 📈 Data Warehouse - Схема "Звезда"
+
+### Структура таблиц
+
+```
+                    ┌──────────────┐
+                    │   dim_date   │
+                    │  (dimension) │
+                    └──────┬───────┘
+                           │
+       ┌──────────────┐    │    ┌──────────────┐
+       │dim_customers │────┼────│ dim_products │
+       │(SCD Type 2)  │    │    │ (SCD Type 2) │
+       └──────┬───────┘    │    └──────┬───────┘
+              │            │           │
+              └────────────┼───────────┘
+                           │
+                    ┌──────▼───────┐
+                    │ fact_orders  │
+                    │    (fact)    │
+                    └──────────────┘
+```
+
+### Таблицы фактов (Fact Tables)
+
+**fact_orders** - факты заказов
 
 ```sql
 CREATE TABLE fact_orders (
     fact_id BIGSERIAL PRIMARY KEY,
     order_id INTEGER NOT NULL,
+    
+    -- Ссылки на измерения (SCD Type 2!)
     customer_key INTEGER REFERENCES dim_customers(customer_key),
     product_key INTEGER REFERENCES dim_products(product_key),
     date_key INTEGER REFERENCES dim_date(date_key),
     time_key INTEGER REFERENCES dim_time(time_key),
     
-    -- Метрики
+    -- Метрики (всегда числовые, аддитивные)
     quantity INTEGER,
     unit_price DECIMAL(10, 2),
     total_amount DECIMAL(12, 2),
+    
+    -- Дегенерированные измерения
     order_status VARCHAR(50),
+    payment_method VARCHAR(50),
     
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-### 5.2 Dimension Tables
+### Таблицы измерений (Dimension Tables)
+
+**dim_customers** (SCD Type 2)
 
 ```sql
--- Измерение: Клиенты (SCD Type 2)
 CREATE TABLE dim_customers (
-    customer_key SERIAL PRIMARY KEY,        -- Surrogate key (генерируется автоматически)
-    customer_id INTEGER NOT NULL,           -- Natural key (ID из источника)
+    customer_key SERIAL PRIMARY KEY,        -- Surrogate key
+    customer_id INTEGER NOT NULL,           -- Natural key
+    
+    -- Атрибуты клиента
     first_name VARCHAR(100),
     last_name VARCHAR(100),
     email VARCHAR(255),
+    phone VARCHAR(20),
     city VARCHAR(100),
+    country VARCHAR(100),
     customer_segment VARCHAR(50),
     
-    -- Поля для SCD Type 2
-    effective_date DATE NOT NULL,           -- Дата начала действия версии
-    expiration_date DATE DEFAULT '9999-12-31',  -- Дата окончания (9999-12-31 = активна)
-    is_current BOOLEAN DEFAULT TRUE,        -- TRUE = текущая версия, FALSE = историческая
+    -- SCD Type 2 поля
+    effective_date DATE NOT NULL,           -- Дата начала действия
+    expiration_date DATE DEFAULT '9999-12-31',  -- Дата окончания
+    is_current BOOLEAN DEFAULT TRUE,        -- Флаг текущей версии
     
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Индексы для эффективного поиска текущих версий
-CREATE INDEX idx_dim_customers_current ON dim_customers(customer_id, is_current);
-CREATE INDEX idx_dim_customers_dates ON dim_customers(effective_date, expiration_date);
+-- Индексы для быстрого поиска
+CREATE INDEX idx_dim_customers_current 
+    ON dim_customers(customer_id, is_current);
+CREATE INDEX idx_dim_customers_dates 
+    ON dim_customers(effective_date, expiration_date);
+```
 
--- Измерение: Продукты (SCD Type 2)
-CREATE TABLE dim_products (
-    product_key SERIAL PRIMARY KEY,         -- Surrogate key
-    product_id INTEGER NOT NULL,            -- Natural key
-    product_name VARCHAR(255),
-    category VARCHAR(100),
-    brand VARCHAR(100),
-    
-    -- Поля для SCD Type 2
-    effective_date DATE NOT NULL,
-    expiration_date DATE DEFAULT '9999-12-31',
-    is_current BOOLEAN DEFAULT TRUE,
-    
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+**dim_date** (статическое измерение)
 
-CREATE INDEX idx_dim_products_current ON dim_products(product_id, is_current);
-
--- Измерение: Дата
+```sql
 CREATE TABLE dim_date (
-    date_key INTEGER PRIMARY KEY,  -- YYYYMMDD
-    full_date DATE NOT NULL,
+    date_key INTEGER PRIMARY KEY,           -- YYYYMMDD
+    full_date DATE NOT NULL UNIQUE,
     day_of_week INTEGER,
     day_name VARCHAR(10),
-    month_number INTEGER,
+    month INTEGER,
+    month_name VARCHAR(10),
     quarter INTEGER,
     year INTEGER,
-    is_weekend BOOLEAN
-);
-
--- Измерение: Время
-CREATE TABLE dim_time (
-    time_key INTEGER PRIMARY KEY,  -- HHMMSS
-    hour INTEGER,
-    minute INTEGER,
-    time_of_day VARCHAR(20),  -- Morning, Afternoon, Evening, Night
-    is_business_hours BOOLEAN
+    is_weekend BOOLEAN,
+    is_holiday BOOLEAN
 );
 ```
 
----
+### Запросы для аналитики
 
-## 6. Описание источников данных
+**Пример 1: Выручка по клиентам с учетом истории**
 
-| Источник | Назначение | Частота обновления | Подключение |
-|----------|------------|-------------------|-------------|
-| **PostgreSQL** | Транзакционные данные (заказы, клиенты) | Реального времени | `postgres:5432/production_db` |
-| **MongoDB** | Неструктурированные данные (отзывы) | Реального времени | `mongodb:27017/feedback_db` |
-| **CSV файлы** | Справочные данные (продукты) | Ежедневно в 02:00 | `/data/csv/products_YYYYMMDD.csv` |
-| **FTP сервер** | Логи доставки | Ежедневно в 01:00 | `ftp://ftp-server/logs/` |
-| **REST API** | Веб-аналитика | По запросу | `https://api.example.com/v1/stats` |
-
-### Стратегия извлечения
-
-- Инкрементальная загрузка (только новые/измененные данные)
-- Временной диапазон: вчерашний день (00:00 - 23:59)
-- Обработка ошибок с повторными попытками
-- Логирование всех операций
-
----
-
-## 6.6 Использование Airflow Connections и переменных окружения
-
-### Концепция безопасного хранения учетных данных
-
-**ВАЖНО**: Никогда не храните пароли, токены и другие sensitive данные в коде!
-
-**Правильный подход:**
-
-1. Учетные данные → `.env` файл (не коммитится в Git)
-2. `.env` → переменные окружения Docker
-3. Переменные окружения → Airflow Connections
-4. Код → использует Airflow Connections
-
-### Структура .env файла
-
-```bash
-# .env - файл с переменными окружения (добавить в .gitignore!)
-
-# PostgreSQL Source Database
-POSTGRES_SOURCE_HOST=postgres-source
-POSTGRES_SOURCE_PORT=5432
-POSTGRES_SOURCE_DB=production_db
-POSTGRES_SOURCE_USER=postgres
-POSTGRES_SOURCE_PASSWORD=your_secure_password_here
-
-# PostgreSQL Analytics & DWH
-POSTGRES_ANALYTICS_HOST=postgres-analytics
-POSTGRES_ANALYTICS_PORT=5432
-POSTGRES_ANALYTICS_DB=analytics_db
-POSTGRES_ANALYTICS_USER=analytics
-POSTGRES_ANALYTICS_PASSWORD=your_analytics_password
-
-# MongoDB
-MONGO_HOST=mongodb
-MONGO_PORT=27017
-MONGO_DB=feedback_db
-MONGO_USER=mongo
-MONGO_PASSWORD=your_mongo_password
-
-# FTP Server
-FTP_HOST=ftp-server
-FTP_PORT=21
-FTP_USER=ftpuser
-FTP_PASSWORD=your_ftp_password
-
-# REST API
-API_BASE_URL=https://api.example.com
-API_AUTH_TOKEN=your_api_token_here
-
-# Airflow
-AIRFLOW_UID=50000
-AIRFLOW_FERNET_KEY=your_fernet_key
+```sql
+-- Выручка по городам, где жили клиенты на момент заказа
+SELECT 
+    c.city,
+    COUNT(DISTINCT f.order_id) as total_orders,
+    SUM(f.total_amount) as total_revenue,
+    AVG(f.total_amount) as avg_order_value
+FROM fact_orders f
+JOIN dim_customers c ON f.customer_key = c.customer_key
+JOIN dim_date d ON f.date_key = d.date_key
+WHERE d.year = 2025
+GROUP BY c.city
+ORDER BY total_revenue DESC;
 ```
 
-### Настройка Airflow Connections
+**Пример 2: Анализ изменений клиентов**
 
-**Способ 1: Через переменные окружения (рекомендуется)**
-
-```bash
-# В docker-compose.yml или .env добавить:
-AIRFLOW_CONN_POSTGRES_SOURCE=postgresql://postgres:password@postgres-source:5432/production_db
-AIRFLOW_CONN_MONGODB=mongodb://mongo:password@mongodb:27017/feedback_db
-AIRFLOW_CONN_POSTGRES_ANALYTICS=postgresql://analytics:password@postgres-analytics:5432/analytics_db
-```
-
-**Способ 2: Через Web UI (для разработки)**
-
-1. Откройте `http://localhost:8080`
-2. Admin → Connections → Add Connection
-3. Conn Id: `postgres_source`, Conn Type: `Postgres`
-
-**Способ 3: Через CLI**
-
-```bash
-docker-compose exec airflow-webserver airflow connections add \
-  'postgres_source' \
-  --conn-type 'postgres' \
-  --conn-host "${POSTGRES_SOURCE_HOST}" \
-  --conn-login "${POSTGRES_SOURCE_USER}" \
-  --conn-password "${POSTGRES_SOURCE_PASSWORD}"
-```
-
-### Использование Connections в коде
-
-```python
-from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.providers.mongo.hooks.mongo import MongoHook
-
-def extract_from_postgres(**context):
-    # ПРАВИЛЬНО: Используем Airflow Connection
-    postgres_hook = PostgresHook(postgres_conn_id='postgres_source')
-    conn = postgres_hook.get_conn()
-    
-    # Или получить DataFrame напрямую
-    df = postgres_hook.get_pandas_df("SELECT * FROM orders")
-    return df
-
-def extract_from_mongodb(**context):
-    # ПРАВИЛЬНО: Используем Airflow Connection
-    mongo_hook = MongoHook(conn_id='mongodb')
-    collection = mongo_hook.get_collection('customer_feedback', mongo_db='feedback_db')
-    data = list(collection.find({}))
-    return data
-```
-
-### Обновленные классы Extractors
-
-```python
-# extractors/postgres_extractor.py
-from airflow.providers.postgres.hooks.postgres import PostgresHook
-
-class PostgresExtractor(BaseExtractor):
-    def __init__(self, conn_id: str):
-        self.conn_id = conn_id
-        self.hook = None
-    
-    def connect(self):
-        # Используем Airflow Hook вместо прямого подключения
-        self.hook = PostgresHook(postgres_conn_id=self.conn_id)
-        self.connection = self.hook.get_conn()
-        logger.info(f"Connected via Airflow connection: {self.conn_id}")
-    
-    def extract(self, start_date, end_date):
-        query = "SELECT * FROM orders WHERE order_date >= %s AND order_date < %s"
-        df = self.hook.get_pandas_df(query, parameters=(start_date, end_date))
-        return df.to_dict('records')
-```
-
-### Проверочный список безопасности
-
-**✅ Обязательно:**
-
-- [ ] Файл `.env` создан с переменными
-- [ ] `.env` добавлен в `.gitignore`
-- [ ] Созданы Airflow Connections для всех источников
-- [ ] Код использует Hooks (`PostgresHook`, `MongoHook`)
-- [ ] Нет хардкод паролей в коде
-
-**❌ ЗАПРЕЩЕНО:**
-
-```python
-# ❌ Хардкод паролей
-config = {'password': 'my_password_123'}
-
-# ✅ ПРАВИЛЬНО
-hook = PostgresHook(postgres_conn_id='postgres_source')
-```
-
----
-
-## 7. Этапы "Загрузка данных" (Extract)
-
-### Процесс извлечения
-
-1. **Инициализация подключений**
-   - Проверка доступности источников
-   - Валидация учетных данных
-   - Установка соединений
-
-2. **Определение временного диапазона**
-
-   ```python
-   execution_date = context['execution_date']
-   start_time = execution_date.replace(hour=0, minute=0, second=0)
-   end_time = start_time + timedelta(days=1)
-   ```
-
-3. **Извлечение из PostgreSQL**
-   - SQL-запрос с фильтром по дате
-   - Пагинация для больших объемов
-   - Сохранение в staging
-
-4. **Извлечение из MongoDB**
-   - Запрос с фильтром по `feedback_date`
-   - Обработка курсора
-   - Конвертация BSON → dict
-
-5. **Загрузка CSV файлов**
-   - Поиск файла по маске `products_YYYYMMDD.csv`
-   - Парсинг CSV
-   - Обработка кодировки UTF-8
-
-6. **Получение с FTP**
-   - Подключение к FTP
-   - Скачивание файлов по маске
-   - Парсинг содержимого
-
-7. **Запрос к REST API**
-   - HTTP GET с параметрами даты
-   - Обработка пагинации
-   - Парсинг JSON
-
-8. **Сохранение raw данных**
-   - Staging область
-   - Метаданные загрузки
-   - Логирование
-
-### Обработка ошибок
-
-- ConnectionError → повторная попытка
-- DataValidationError → логирование и пропуск
-- Exception → остановка pipeline
-
----
-
-## 8. Этапы "Трансформация данных" (Transform)
-
-### 8.1 Очистка данных
-
-**Удаление дубликатов:**
-
-```python
-df = df.drop_duplicates(subset=['order_id'], keep='last')
-```
-
-**Обработка пропусков:**
-
-```python
-df['total_amount'].fillna(0, inplace=True)
-df = df.dropna(subset=['order_id', 'customer_id'])
-```
-
-**Очистка текста:**
-
-```python
-df['status'] = df['status'].str.strip().str.lower()
-status_mapping = {'в обработке': 'processing', 'доставлен': 'delivered'}
-df['status'] = df['status'].replace(status_mapping)
-```
-
-### 8.2 Валидация данных
-
-**Проверка типов:**
-
-```python
-df['order_id'] = df['order_id'].astype('int64')
-df['order_date'] = pd.to_datetime(df['order_date'])
-df['total_amount'] = pd.to_numeric(df['total_amount'])
-```
-
-**Проверка диапазонов:**
-
-```python
-df = df[df['total_amount'] >= 0]
-df = df[df['order_date'] <= datetime.now()]
-```
-
-**Бизнес-правила:**
-
-```python
-# Delivered заказы должны иметь дату доставки
-invalid = df[(df['status'] == 'delivered') & (df['delivery_date'].isna())]
-df.loc[invalid.index, 'status'] = 'shipped'
-```
-
-### 8.3 Нормализация
-
-```python
-# Даты к единому формату
-df['order_date'] = pd.to_datetime(df['order_date']).dt.tz_localize('UTC')
-
-# Округление сумм
-df['total_amount'] = df['total_amount'].round(2)
-
-# Конвертация валют (при необходимости)
-df['total_amount_usd'] = df.apply(lambda row: convert_currency(row), axis=1)
-```
-
-### 8.4 Обогащение данных
-
-```python
-# Добавление вычисляемых полей
-df['day_of_week'] = df['order_date'].dt.dayofweek
-df['is_weekend'] = df['day_of_week'].isin([5, 6])
-df['hour_of_day'] = df['order_date'].dt.hour
-
-# Категоризация сумм
-df['amount_category'] = pd.cut(
-    df['total_amount'],
-    bins=[0, 50, 200, 1000, float('inf')],
-    labels=['small', 'medium', 'large', 'extra_large']
+```sql
+-- Клиенты, которые меняли город
+SELECT 
+    customer_id,
+    city,
+    effective_date,
+    expiration_date,
+    is_current,
+    CASE 
+        WHEN is_current = FALSE THEN 'Historical'
+        ELSE 'Current'
+    END as version_status
+FROM dim_customers
+WHERE customer_id IN (
+    SELECT customer_id
+    FROM dim_customers
+    GROUP BY customer_id
+    HAVING COUNT(*) > 1
 )
-
-# Объединение со справочниками
-df = df.merge(df_customers[['customer_id', 'city']], on='customer_id', how='left')
-```
-
-### 8.5 Агрегация метрик
-
-```python
-def calculate_daily_metrics(df, analytics_date):
-    return {
-        'analytics_date': analytics_date,
-        'total_orders': len(df),
-        'total_revenue': df['total_amount'].sum(),
-        'avg_order_value': df['total_amount'].mean(),
-        'unique_customers': df['customer_id'].nunique(),
-        'orders_delivered': len(df[df['status'] == 'delivered']),
-        'top_category': df['category'].mode()[0] if not df.empty else None
-    }
+ORDER BY customer_id, effective_date;
 ```
 
 ---
 
-## 9. Этапы "Загрузка данных" (Load)
+## Визуализация - Dashboard в Grafana
 
-### 9.1 Загрузка в аналитическую БД
+### Настройка Grafana
 
-**Upsert в daily_business_analytics**
+1. Откройте Grafana: http://localhost:3000
+2. Логин: admin / admin
+3. Add data source → PostgreSQL
+4. Настройте подключение к `postgres-analytics`
 
-```python
-def upsert_analytics(df_analytics, conn):
-    for _, row in df_analytics.iterrows():
-        if exists := check_existing(conn, row['analytics_date']):
-            conn.execute("""
-                UPDATE daily_business_analytics
-                SET total_orders = %s, total_revenue = %s, updated_at = NOW()
-                WHERE analytics_date = %s
-            """, (row['total_orders'], row['total_revenue'], row['analytics_date']))
-        else:
-            conn.execute("""
-                INSERT INTO daily_business_analytics 
-                (analytics_date, total_orders, total_revenue)
-                VALUES (%s, %s, %s)
-            """, (row['analytics_date'], row['total_orders'], row['total_revenue']))
-    conn.commit()
+### Рекомендуемые панели для дашборда
+
+**1. Обзор продаж (Sales Overview)**
+
+- Total Orders (общее количество заказов)
+- Total Revenue (общая выручка)
+- Average Order Value (средний чек)
+- Revenue Trend (тренд выручки по дням)
+
+**SQL для Total Revenue:**
+
+```sql
+SELECT 
+    SUM(total_revenue) as total_revenue
+FROM daily_business_analytics
+WHERE analytics_date >= NOW() - INTERVAL '30 days';
 ```
 
-### 9.2 Загрузка в Data Warehouse
+**2. География продаж (Sales by Geography)**
 
-**Таблицы измерений (SCD Type 2):**
+- Map: продажи по городам
+- Top 10 Cities (топ-10 городов по выручке)
+- Orders by Country (заказы по странам)
 
-```python
-def load_dim_customers(df_customers, conn):
-    for _, customer in df_customers.iterrows():
-        current = get_current_record(conn, customer['customer_id'])
-        
-        if current is None:
-            # Новый клиент
-            insert_new_customer(conn, customer)
-        elif has_changes(current, customer):
-            # Закрываем старую версию
-            conn.execute("""
-                UPDATE dim_customers 
-                SET expiration_date = CURRENT_DATE, is_current = FALSE
-                WHERE customer_key = %s
-            """, (current['customer_key'],))
-            # Создаем новую версию
-            insert_new_customer(conn, customer)
-    conn.commit()
+**SQL для топ-10 городов:**
+
+```sql
+SELECT 
+    c.city,
+    COUNT(DISTINCT f.order_id) as orders,
+    SUM(f.total_amount) as revenue
+FROM fact_orders f
+JOIN dim_customers c ON f.customer_key = c.customer_key
+WHERE c.is_current = TRUE
+GROUP BY c.city
+ORDER BY revenue DESC
+LIMIT 10;
 ```
 
-**Таблица фактов:**
+**3. Анализ клиентов (Customer Analysis)**
 
-```python
-def load_fact_orders(df_facts, conn):
-    # Обогащение surrogate keys
-    df_facts = enrich_with_dimension_keys(df_facts, conn)
-    
-    # Batch insert
-    values = [(row['order_id'], row['customer_key'], 
-               row['product_key'], row['total_amount']) 
-              for _, row in df_facts.iterrows()]
-    
-    execute_values(conn.cursor(), """
-        INSERT INTO fact_orders 
-        (order_id, customer_key, product_key, total_amount)
-        VALUES %s
-    """, values)
-    conn.commit()
+- New vs Returning Customers
+- Customer Segments Distribution
+- Average Customer Rating
+- Top Customers by Revenue
+
+**SQL для сегментов:**
+
+```sql
+SELECT 
+    c.customer_segment,
+    COUNT(DISTINCT c.customer_id) as customers,
+    SUM(f.total_amount) as revenue
+FROM fact_orders f
+JOIN dim_customers c ON f.customer_key = c.customer_key
+GROUP BY c.customer_segment;
 ```
 
-### 9.3 Обновление агрегированных таблиц
+**4. Качество сервиса (Service Quality)**
 
-```python
-def update_aggregates(analytics_date, conn):
-    # Удаление старых данных
-    conn.execute("DELETE FROM agg_daily_sales WHERE date_key = %s", 
-                (int(analytics_date.strftime('%Y%m%d')),))
-    
-    # Вставка новых агрегатов
-    conn.execute("""
-        INSERT INTO agg_daily_sales
-        SELECT date_key, product_key, customer_segment,
-               COUNT(*) as total_orders, SUM(total_amount) as total_revenue
-        FROM fact_orders f
-        JOIN dim_customers c ON f.customer_key = c.customer_key
-        WHERE f.date_key = %s
-        GROUP BY date_key, product_key, customer_segment
-    """, (int(analytics_date.strftime('%Y%m%d')),))
-    conn.commit()
+- Average Rating (средний рейтинг)
+- Rating Distribution (распределение оценок)
+- Delivery Success Rate (процент успешных доставок)
+- Average Delivery Time (среднее время доставки)
+
+**SQL для рейтинга:**
+
+```sql
+SELECT 
+    DATE(analytics_date) as date,
+    avg_customer_rating
+FROM daily_business_analytics
+WHERE analytics_date >= NOW() - INTERVAL '30 days'
+ORDER BY date;
 ```
 
-### 9.4 Валидация загруженных данных
+**5. Товары (Products)**
 
-```python
-def validate_loaded_data(analytics_date, conn):
-    validations = []
-    
-    # Проверка наличия записи в аналитике
-    result = conn.execute("""
-        SELECT total_orders FROM daily_business_analytics
-        WHERE analytics_date = %s
-    """, (analytics_date,)).fetchone()
-    validations.append({'check': 'analytics_exists', 'passed': result is not None})
-    
-    # Проверка количества фактов
-    fact_count = conn.execute("""
-        SELECT COUNT(*) FROM fact_orders WHERE date_key = %s
-    """, (int(analytics_date.strftime('%Y%m%d')),)).fetchone()[0]
-    validations.append({'check': 'facts_loaded', 'passed': fact_count > 0})
-    
-    # Проверка отсутствия NULL в критичных полях
-    null_count = conn.execute("""
-        SELECT COUNT(*) FROM fact_orders
-        WHERE date_key = %s AND (customer_key IS NULL OR product_key IS NULL)
-    """, (int(analytics_date.strftime('%Y%m%d')),)).fetchone()[0]
-    validations.append({'check': 'no_nulls', 'passed': null_count == 0})
-    
-    for v in validations:
-        if not v['passed']:
-            raise ValidationError(f"Validation failed: {v['check']}")
-    
-    return True
-```
+- Top 10 Products (топ-10 товаров)
+- Sales by Category (продажи по категориям)
+- Low Stock Alert (товары с низким остатком)
 
 ---
 
-## 10. Docker Compose для инфраструктуры
+## Мониторинг и алерты
 
-### ВАЖНО: Файловая структура проекта
+### Настройка алертов в Airflow
 
-```
-project/
-├── .env                    # Переменные окружения (НЕ коммитить!)
-├── .env.example           # Пример для документации
-├── .gitignore             # Обязательно добавить .env
-├── docker-compose.yml
-├── dags/
-├── extractors/
-├── transformers/
-├── loaders/
-└── init-scripts/
-```
-
-### .env.example
-
-```bash
-# PostgreSQL Source
-POSTGRES_SOURCE_USER=postgres
-POSTGRES_SOURCE_PASSWORD=change_me
-POSTGRES_SOURCE_DB=production_db
-
-# PostgreSQL Analytics
-POSTGRES_ANALYTICS_USER=analytics
-POSTGRES_ANALYTICS_PASSWORD=change_me
-POSTGRES_ANALYTICS_DB=analytics_db
-
-# MongoDB
-MONGO_USER=mongo
-MONGO_PASSWORD=change_me
-MONGO_DB=feedback_db
-
-# Airflow Connections
-AIRFLOW_CONN_POSTGRES_SOURCE=postgresql://postgres:change_me@postgres-source:5432/production_db
-AIRFLOW_CONN_POSTGRES_ANALYTICS=postgresql://analytics:change_me@postgres-analytics:5432/analytics_db
-AIRFLOW_CONN_MONGODB=mongodb://mongo:change_me@mongodb:27017/feedback_db
-```
-
-### .gitignore
-
-```gitignore
-# КРИТИЧЕСКИ ВАЖНО!
-.env
-
-# Python
-__pycache__/
-*.pyc
-
-# Airflow
-logs/
-airflow.db
-```
-
-### docker-compose.yml (с .env)
-
-```yaml
-version: '3.8'
-
-services:
-  # Airflow Database
-  postgres-airflow:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
-    volumes:
-      - postgres-airflow-data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-
-  # Airflow Webserver
-  airflow-webserver:
-    image: apache/airflow:2.8.1-python3.10
-    depends_on:
-      - postgres-airflow
-    env_file:
-      - .env  # Подключаем переменные окружения
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      # Connections через переменные окружения из .env
-      AIRFLOW_CONN_POSTGRES_SOURCE: ${AIRFLOW_CONN_POSTGRES_SOURCE}
-      AIRFLOW_CONN_POSTGRES_ANALYTICS: ${AIRFLOW_CONN_POSTGRES_ANALYTICS}
-      AIRFLOW_CONN_MONGODB: ${AIRFLOW_CONN_MONGODB}
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
-      - ./plugins:/opt/airflow/plugins
-      - ./data:/opt/airflow/data
-    ports:
-      - "8080:8080"
-    command: webserver
-
-  # Airflow Scheduler
-  airflow-scheduler:
-    image: apache/airflow:2.8.1-python3.11
-    depends_on:
-      - postgres-airflow
-    env_file:
-      - .env
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      AIRFLOW_CONN_POSTGRES_SOURCE: ${AIRFLOW_CONN_POSTGRES_SOURCE}
-      AIRFLOW_CONN_POSTGRES_ANALYTICS: ${AIRFLOW_CONN_POSTGRES_ANALYTICS}
-      AIRFLOW_CONN_MONGODB: ${AIRFLOW_CONN_MONGODB}
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
-      - ./plugins:/opt/airflow/plugins
-      - ./data:/opt/airflow/data
-    command: scheduler
-
-  # Source PostgreSQL
-  postgres-source:
-    image: postgres:15
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_SOURCE_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_SOURCE_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_SOURCE_DB}
-    volumes:
-      - postgres-source-data:/var/lib/postgresql/data
-      - ./init-scripts/init-source-db.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-
-  # Analytics PostgreSQL & DWH
-  postgres-analytics:
-    image: postgres:15
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_ANALYTICS_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_ANALYTICS_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_ANALYTICS_DB}
-    volumes:
-      - postgres-analytics-data:/var/lib/postgresql/data
-      - ./init-scripts/init-analytics-db.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5434:5432"
-
-  # MongoDB
-  mongodb:
-    image: mongo:7
-    env_file:
-      - .env
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
-      MONGO_INITDB_DATABASE: ${MONGO_DB}
-    volumes:
-      - mongodb-data:/data/db
-    ports:
-      - "27017:27017"
- 
-  # FTP Server
-  ftp-server:
-    image: fauria/vsftpd
-    environment:
-      FTP_USER: ${FTP_USER}
-      FTP_PASS: ${FTP_PASSWORD}
-    volumes:
-      - ./data/ftp:/home/vsftpd/ftpuser
-    ports:
-      - "21:21"
-      - "21100-21110:21100-21110"
-
-  # Mock REST API
-  mock-api:
-    image: mockserver/mockserver:latest
-    environment:
-      MOCKSERVER_INITIALIZATION_JSON_PATH: /config/initializerJson.json
-    volumes:
-      - ./mock-api/initializerJson.json:/config/initializerJson.json
-    ports:
-      - "1080:1080"
-
-  # Grafana
-  grafana:
-    image: grafana/grafana:latest
-    depends_on:
-      - postgres-analytics
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
-    ports:
-      - "3000:3000"
-
-volumes:
-  postgres-airflow-data:
-  postgres-source-data:
-  postgres-analytics-data:
-  mongodb-data:
-  grafana-data:
-
-networks:
-  default:
-    name: etl-network
-```
-
-### Запуск
-
-```bash
-# 1. Создание .env
-cp .env.example .env
-# Отредактируйте .env с реальными паролями!
-
-# 2. Запуск всей инфраструктуры
-docker-compose up -d
-
-# 3. Проверка Connections
-docker-compose exec airflow-webserver airflow connections list
-
-# Просмотр логов
-docker-compose logs -f airflow-scheduler
-
-# Остановка
-docker-compose down
-
-# Очистка данных
-docker-compose down -v
-```
-
----
-
-## 11. Классы Extractors
-
-### Базовый класс
+**В DAG файле:**
 
 ```python
-# extractors/base_extractor.py
-
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List
-import logging
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-class BaseExtractor(ABC):
-    """Базовый класс для всех экстракторов"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.connection = None
-        
-    @abstractmethod
-    def connect(self):
-        """Установка соединения"""
-        pass
-    
-    @abstractmethod
-    def disconnect(self):
-        """Закрытие соединения"""
-        pass
-    
-    @abstractmethod
-    def extract(self, start_date: datetime, end_date: datetime) -> List[Dict]:
-        """Извлечение данных за период"""
-        pass
-    
-    def __enter__(self):
-        self.connect()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.disconnect()
-```
-
-### PostgreSQL Extractor
-
-```python
-# extractors/postgres_extractor.py
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import pandas as pd
-from .base_extractor import BaseExtractor
-
-class PostgresExtractor(BaseExtractor):
-    """Экстрактор для PostgreSQL"""
-    
-    def connect(self):
-        self.connection = psycopg2.connect(
-            host=self.config['host'],
-            port=self.config['port'],
-            database=self.config['database'],
-            user=self.config['user'],
-            password=self.config['password']
-        )
-        logger.info(f"Connected to PostgreSQL: {self.config['database']}")
-    
-    def disconnect(self):
-        if self.connection:
-            self.connection.close()
-    
-    def extract(self, start_date, end_date):
-        query = """
-            SELECT o.*, c.first_name, c.last_name, c.email, c.city
-            FROM orders o
-            LEFT JOIN customers c ON o.customer_id = c.customer_id
-            WHERE o.order_date >= %s AND o.order_date < %s
-        """
-        with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(query, (start_date, end_date))
-            data = [dict(row) for row in cursor.fetchall()]
-        logger.info(f"Extracted {len(data)} orders")
-        return data
-```
-
-### MongoDB Extractor
-
-```python
-# extractors/mongodb_extractor.py
-
-from pymongo import MongoClient
-from .base_extractor import BaseExtractor
-
-class MongoDBExtractor(BaseExtractor):
-    """Экстрактор для MongoDB"""
-    
-    def connect(self):
-        connection_string = (
-            f"mongodb://{self.config['username']}:{self.config['password']}"
-            f"@{self.config['host']}:{self.config['port']}"
-        )
-        self.client = MongoClient(connection_string)
-        self.db = self.client[self.config['database']]
-        self.collection = self.db[self.config['collection']]
-        logger.info(f"Connected to MongoDB: {self.config['database']}")
-    
-    def disconnect(self):
-        if self.client:
-            self.client.close()
-    
-    def extract(self, start_date, end_date):
-        query = {"feedback_date": {"$gte": start_date, "$lt": end_date}}
-        data = []
-        for doc in self.collection.find(query):
-            doc['_id'] = str(doc['_id'])
-            data.append(doc)
-        logger.info(f"Extracted {len(data)} feedback documents")
-        return data
-```
-
-### CSV Extractor
-
-```python
-# extractors/csv_extractor.py
-
-import pandas as pd
-import glob
-import os
-from .base_extractor import BaseExtractor
-
-class CSVExtractor(BaseExtractor):
-    """Экстрактор для CSV файлов"""
-    
-    def connect(self):
-        directory = self.config.get('directory', '/data/csv')
-        if not os.path.exists(directory):
-            raise FileNotFoundError(f"Directory not found: {directory}")
-    
-    def disconnect(self):
-        pass
-    
-    def extract(self, start_date, end_date):
-        directory = self.config.get('directory', '/data/csv')
-        pattern = self.config.get('file_pattern', 'products_*.csv')
-        
-        files = glob.glob(os.path.join(directory, pattern))
-        all_data = []
-        
-        for file_path in files:
-            df = pd.read_csv(file_path, encoding='utf-8')
-            all_data.extend(df.to_dict('records'))
-            logger.info(f"Extracted {len(df)} records from {os.path.basename(file_path)}")
-        
-        return all_data
-```
-
-### FTP Extractor
-
-```python
-# extractors/ftp_extractor.py
-
-from ftplib import FTP
-import pandas as pd
-import io
-from .base_extractor import BaseExtractor
-
-class FTPExtractor(BaseExtractor):
-    """Экстрактор для FTP"""
-    
-    def connect(self):
-        self.ftp = FTP()
-        self.ftp.connect(self.config['host'], self.config.get('port', 21))
-        self.ftp.login(self.config['username'], self.config['password'])
-        if 'path' in self.config:
-            self.ftp.cwd(self.config['path'])
-        logger.info(f"Connected to FTP: {self.config['host']}")
-    
-    def disconnect(self):
-        if hasattr(self, 'ftp'):
-            self.ftp.quit()
-    
-    def extract(self, start_date, end_date):
-        files = self.ftp.nlst()
-        all_data = []
-        
-        for filename in files:
-            if filename.endswith('.csv'):
-                data = io.BytesIO()
-                self.ftp.retrbinary(f'RETR {filename}', data.write)
-                content = data.getvalue().decode('utf-8')
-                df = pd.read_csv(io.StringIO(content))
-                all_data.extend(df.to_dict('records'))
-                logger.info(f"Extracted {len(df)} records from {filename}")
-        
-        return all_data
-```
-
-### REST API Extractor
-
-```python
-# extractors/api_extractor.py
-
-import requests
-import time
-from .base_extractor import BaseExtractor
-
-class APIExtractor(BaseExtractor):
-    """Экстрактор для REST API"""
-    
-    def connect(self):
-        base_url = self.config['base_url']
-        response = requests.get(f"{base_url}/health", timeout=30)
-        response.raise_for_status()
-        logger.info(f"API accessible: {base_url}")
-    
-    def disconnect(self):
-        pass
-    
-    def extract(self, start_date, end_date):
-        url = f"{self.config['base_url']}{self.config.get('endpoint', '/api/v1/stats')}"
-        headers = {'Content-Type': 'application/json'}
-        
-        if token := self.config.get('auth_token'):
-            headers['Authorization'] = f'Bearer {token}'
-        
-        params = {
-            'start_date': start_date.strftime('%Y-%m-%d'),
-            'end_date': end_date.strftime('%Y-%m-%d')
-        }
-        
-        response = self._make_request_with_retry(url, headers, params)
-        data = response.json()
-        result = [data] if isinstance(data, dict) else data
-        logger.info(f"Extracted {len(result)} records from API")
-        return result
-    
-    def _make_request_with_retry(self, url, headers, params, max_retries=3):
-        for attempt in range(max_retries):
-            try:
-                response = requests.get(url, headers=headers, params=params, timeout=30)
-                if response.status_code == 429:
-                    time.sleep(int(response.headers.get('Retry-After', 60)))
-                    continue
-                response.raise_for_status()
-                return response
-            except requests.exceptions.RequestException as e:
-                if attempt == max_retries - 1:
-                    raise
-                time.sleep(2 ** attempt)
-```
-
----
-
-## 12. Функции очистки и валидации
-
-```python
-# transformers/validators.py
-
-import pandas as pd
-import numpy as np
-import re
-import logging
-
-logger = logging.getLogger(__name__)
-
-class DataValidator:
-    """Класс для валидации данных"""
-    
-    @staticmethod
-    def validate_data_types(df, schema):
-        """Валидация и приведение типов"""
-        errors = []
-        for column, expected_type in schema.items():
-            if column not in df.columns:
-                errors.append(f"Missing column: {column}")
-                continue
-            try:
-                if expected_type == 'int64':
-                    df[column] = pd.to_numeric(df[column], errors='coerce').astype('Int64')
-                elif expected_type == 'float64':
-                    df[column] = pd.to_numeric(df[column], errors='coerce')
-                elif expected_type == 'datetime64':
-                    df[column] = pd.to_datetime(df[column], errors='coerce')
-            except Exception as e:
-                errors.append(f"Error converting {column}: {e}")
-        return df, errors
-    
-    @staticmethod
-    def validate_not_null(df, required_columns, drop_invalid=True):
-        """Проверка обязательных полей"""
-        initial_count = len(df)
-        if drop_invalid:
-            df = df.dropna(subset=required_columns)
-        removed = initial_count - len(df)
-        logger.info(f"Removed {removed} rows with NULL values")
-        return df, removed
-    
-    @staticmethod
-    def validate_ranges(df, range_rules):
-        """Валидация диапазонов"""
-        violations = []
-        for column, rules in range_rules.items():
-            if column not in df.columns:
-                continue
-            if min_val := rules.get('min'):
-                invalid = df[df[column] < min_val]
-                if len(invalid) > 0:
-                    violations.append(f"{column}: {len(invalid)} below {min_val}")
-                    df = df[df[column] >= min_val]
-            if max_val := rules.get('max'):
-                invalid = df[df[column] > max_val]
-                if len(invalid) > 0:
-                    violations.append(f"{column}: {len(invalid)} above {max_val}")
-                    df = df[df[column] <= max_val]
-        return df, violations
-    
-    @staticmethod
-    def validate_business_rules(df):
-        """Проверка бизнес-правил"""
-        violations = []
-        
-        # Delivered заказы должны иметь дату доставки
-        if 'status' in df.columns and 'delivery_date' in df.columns:
-            invalid = df[(df['status'] == 'delivered') & (df['delivery_date'].isna())]
-            if not invalid.empty:
-                violations.append(f"{len(invalid)} delivered without delivery_date")
-                df.loc[invalid.index, 'status'] = 'shipped'
-        
-        return df, violations
-
-
-class DataCleaner:
-    """Класс для очистки данных"""
-    
-    @staticmethod
-    def remove_duplicates(df, subset=None, keep='last'):
-        """Удаление дубликатов"""
-        initial = len(df)
-        df = df.drop_duplicates(subset=subset, keep=keep)
-        removed = initial - len(df)
-        logger.info(f"Removed {removed} duplicates")
-        return df, removed
-    
-    @staticmethod
-    def clean_text_columns(df, columns):
-        """Очистка текстовых полей"""
-        for col in columns:
-            if col in df.columns:
-                df[col] = df[col].str.strip()
-                df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
-        return df
-    
-    @staticmethod
-    def standardize_values(df, column, mapping):
-        """Стандартизация значений"""
-        if column in df.columns:
-            df[column] = df[column].replace(mapping)
-        return df
-    
-    @staticmethod
-    def fill_missing_values(df, fill_strategy):
-        """Заполнение пропусков"""
-        for column, strategy in fill_strategy.items():
-            if column not in df.columns:
-                continue
-            if strategy == 'mean':
-                df[column].fillna(df[column].mean(), inplace=True)
-            elif strategy == 'median':
-                df[column].fillna(df[column].median(), inplace=True)
-            elif strategy == 'mode':
-                mode = df[column].mode()
-                if not mode.empty:
-                    df[column].fillna(mode[0], inplace=True)
-            else:
-                df[column].fillna(strategy, inplace=True)
-        return df
-
-# Пример использования
-def validate_and_clean_orders(df):
-    """Полный цикл валидации и очистки"""
-    logger.info(f"Initial rows: {len(df)}")
-    
-    # Удаление дубликатов
-    df, _ = DataCleaner.remove_duplicates(df, subset=['order_id'])
-    
-    # Валидация типов
-    schema = {
-        'order_id': 'int64',
-        'total_amount': 'float64',
-        'order_date': 'datetime64'
-    }
-    df, _ = DataValidator.validate_data_types(df, schema)
-    
-    # Проверка обязательных полей
-    df, _ = DataValidator.validate_not_null(df, ['order_id', 'customer_id'])
-    
-    # Валидация диапазонов
-    range_rules = {'total_amount': {'min': 0, 'max': 1000000}}
-    df, _ = DataValidator.validate_ranges(df, range_rules)
-    
-    # Очистка текста
-    df = DataCleaner.clean_text_columns(df, ['status', 'payment_method'])
-    
-    # Стандартизация статусов
-    mapping = {'в обработке': 'processing', 'доставлен': 'delivered'}
-    df = DataCleaner.standardize_values(df, 'status', mapping)
-    
-    # Бизнес-правила
-    df, _ = DataValidator.validate_business_rules(df)
-    
-    logger.info(f"Final rows: {len(df)}")
-    return df
-```
-
----
-
-## 13. Функции загрузки данных
-
-```python
-# loaders/warehouse_loader.py
-
-import logging
-from psycopg2.extras import execute_values
-
-logger = logging.getLogger(__name__)
-
-class WarehouseLoader:
-    """Класс для загрузки данных в хранилище"""
-    
-    def __init__(self, connection):
-        self.conn = connection
-    
-    def upsert_analytics(self, df_analytics):
-        """Вставка/обновление дневной аналитики"""
-        for _, row in df_analytics.iterrows():
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT id FROM daily_business_analytics 
-                WHERE analytics_date = %s
-            """, (row['analytics_date'],))
-            
-            if cursor.fetchone():
-                # UPDATE
-                cursor.execute("""
-                    UPDATE daily_business_analytics
-                    SET total_orders = %s,
-                        total_revenue = %s,
-                        avg_order_value = %s,
-                        updated_at = NOW()
-                    WHERE analytics_date = %s
-                """, (row['total_orders'], row['total_revenue'], 
-                      row['avg_order_value'], row['analytics_date']))
-            else:
-                # INSERT
-                cursor.execute("""
-                    INSERT INTO daily_business_analytics
-                    (analytics_date, total_orders, total_revenue, avg_order_value)
-                    VALUES (%s, %s, %s, %s)
-                """, (row['analytics_date'], row['total_orders'], 
-                      row['total_revenue'], row['avg_order_value']))
-            
-            self.conn.commit()
-        logger.info("Analytics data loaded successfully")
-    
-    def load_dim_customers(self, df_customers):
-        """
-        Загрузка измерения клиентов с использованием SCD Type 2
-        
-        Алгоритм SCD Type 2:
-        1. Для каждого клиента ищем текущую активную версию (is_current=TRUE)
-        2. Если клиента нет - создаем новую запись (INSERT)
-        3. Если клиент существует - сравниваем отслеживаемые атрибуты:
-           a. Без изменений - ничего не делаем
-           b. Есть изменения:
-              - Закрываем текущую версию (UPDATE: is_current=FALSE, expiration_date=вчера)
-              - Создаем новую версию (INSERT: новый customer_key, is_current=TRUE)
-        
-        Результат: полная история изменений атрибутов клиента
-        """
-        cursor = self.conn.cursor()
-        
-        for _, customer in df_customers.iterrows():
-            # Шаг 1: Проверяем наличие текущей активной версии
-            cursor.execute("""
-                SELECT customer_key, email, city, customer_segment
-                FROM dim_customers
-                WHERE customer_id = %s AND is_current = TRUE
-            """, (customer['customer_id'],))
-            
-            current = cursor.fetchone()
-            
-            if current is None:
-                # Шаг 2: Новый клиент - создаем первую версию
-                cursor.execute("""
-                    INSERT INTO dim_customers
-                    (customer_id, first_name, last_name, email, city, customer_segment,
-                     effective_date, expiration_date, is_current)
-                    VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE, '9999-12-31', TRUE)
-                """, (customer['customer_id'], customer['first_name'],
-                      customer['last_name'], customer['email'], customer['city'],
-                      customer.get('customer_segment', 'Regular')))
-                logger.info(f"✅ Создан новый клиент: {customer['customer_id']}")
-            else:
-                # Шаг 3: Проверяем изменения отслеживаемых атрибутов
-                current_key, current_email, current_city, current_segment = current
-                
-                has_changes = (
-                    current_email != customer['email'] or 
-                    current_city != customer['city'] or
-                    current_segment != customer.get('customer_segment')
-                )
-                
-                if has_changes:
-                    # Есть изменения - применяем SCD Type 2
-                    
-                    # Закрываем текущую версию (истекает вчера)
-                    cursor.execute("""
-                        UPDATE dim_customers
-                        SET expiration_date = CURRENT_DATE - INTERVAL '1 day',
-                            is_current = FALSE
-                        WHERE customer_key = %s
-                    """, (current_key,))
-                    
-                    # Создаем новую версию (начинается сегодня)
-                    cursor.execute("""
-                        INSERT INTO dim_customers
-                        (customer_id, first_name, last_name, email, city, customer_segment,
-                         effective_date, expiration_date, is_current)
-                        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_DATE, '9999-12-31', TRUE)
-                    """, (customer['customer_id'], customer['first_name'],
-                          customer['last_name'], customer['email'], customer['city'],
-                          customer.get('customer_segment', 'Regular')))
-                    
-                    logger.info(f"📝 SCD Type 2: Новая версия клиента {customer['customer_id']}")
-                    logger.debug(f"   Старый key={current_key} закрыт, создан новый key")
-                else:
-                    logger.debug(f"⏭️  Клиент {customer['customer_id']} без изменений")
-        
-        self.conn.commit()
-        logger.info(f"Обработано {len(df_customers)} клиентов с SCD Type 2")
-    
-    def get_customer_version_by_date(self, customer_id, as_of_date):
-        """
-        ДЕМОНСТРАЦИЯ: Получение версии клиента на определенную дату
-        
-        Это показывает главное преимущество SCD Type 2 - возможность
-        "вернуться в прошлое" и увидеть, какими были данные на любую дату
-        
-        Args:
-            customer_id: ID клиента
-            as_of_date: Дата, на которую нужны данные
-            
-        Returns:
-            Версия клиента, действующая на указанную дату
-        
-        Пример:
-            # Клиент переехал 15 июня 2025
-            customer_may = loader.get_customer_version_by_date(123, '2025-05-01')
-            # -> city='Москва'
-            
-            customer_july = loader.get_customer_version_by_date(123, '2025-07-01')
-            # -> city='Санкт-Петербург'
-        """
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT 
-                customer_key,
-                customer_id,
-                first_name,
-                last_name,
-                email,
-                city,
-                customer_segment,
-                effective_date,
-                expiration_date
-            FROM dim_customers
-            WHERE customer_id = %s 
-              AND effective_date <= %s 
-              AND expiration_date >= %s
-        """, (customer_id, as_of_date, as_of_date))
-        
-        result = cursor.fetchone()
-        
-        if result:
-            logger.info(f"Найдена версия клиента {customer_id} на дату {as_of_date}")
-            logger.debug(f"  Key={result[0]}, City={result[5]}, "
-                        f"Valid from {result[7]} to {result[8]}")
-        else:
-            logger.warning(f"Версия клиента {customer_id} на {as_of_date} не найдена")
-        
-        return result
-    
-    def load_fact_orders(self, df_facts):
-        """Загрузка фактов заказов"""
-        # Обогащение surrogate keys
-        df_facts = self._enrich_with_keys(df_facts)
-        
-        # Batch insert
-        values = [
-            (row['order_id'], row['customer_key'], row['product_key'],
-             row['date_key'], row['total_amount'], row['order_status'])
-            for _, row in df_facts.iterrows()
-        ]
-        
-        cursor = self.conn.cursor()
-        execute_values(cursor, """
-            INSERT INTO fact_orders
-            (order_id, customer_key, product_key, date_key, 
-             total_amount, order_status)
-            VALUES %s
-        """, values)
-        
-        self.conn.commit()
-        logger.info(f"Loaded {len(df_facts)} facts")
-    
-    def _enrich_with_keys(self, df_facts):
-        """Добавление surrogate keys"""
-        import pandas as pd
-        
-        # Получение customer_key
-        customer_keys = pd.read_sql("""
-            SELECT customer_id, customer_key
-            FROM dim_customers WHERE is_current = TRUE
-        """, self.conn)
-        df_facts = df_facts.merge(customer_keys, on='customer_id', how='left')
-        
-        # Получение product_key
-        product_keys = pd.read_sql("""
-            SELECT product_id, product_key
-            FROM dim_products WHERE is_current = TRUE
-        """, self.conn)
-        df_facts = df_facts.merge(product_keys, on='product_id', how='left')
-        
-        # Добавление date_key
-        df_facts['date_key'] = df_facts['order_date'].dt.strftime('%Y%m%d').astype(int)
-        
-        return df_facts
-    
-    def update_aggregates(self, analytics_date):
-        """Обновление агрегированных таблиц"""
-        date_key = int(analytics_date.strftime('%Y%m%d'))
-        cursor = self.conn.cursor()
-        
-        # Удаление старых данных
-        cursor.execute("""
-            DELETE FROM agg_daily_sales WHERE date_key = %s
-        """, (date_key,))
-        
-        # Вставка новых агрегатов
-        cursor.execute("""
-            INSERT INTO agg_daily_sales
-            (date_key, product_key, customer_segment,
-             total_orders, total_revenue, avg_order_value)
-            SELECT 
-                f.date_key,
-                f.product_key,
-                c.customer_segment,
-                COUNT(DISTINCT f.order_id),
-                SUM(f.total_amount),
-                AVG(f.total_amount)
-            FROM fact_orders f
-            JOIN dim_customers c ON f.customer_key = c.customer_key
-            WHERE f.date_key = %s
-            GROUP BY f.date_key, f.product_key, c.customer_segment
-        """, (date_key,))
-        
-        self.conn.commit()
-        logger.info(f"Aggregates updated for {analytics_date}")
-    
-    def validate_load(self, analytics_date):
-        """Валидация загруженных данных"""
-        cursor = self.conn.cursor()
-        validations = []
-        
-        # Проверка наличия аналитики
-        cursor.execute("""
-            SELECT total_orders FROM daily_business_analytics
-            WHERE analytics_date = %s
-        """, (analytics_date,))
-        validations.append({'check': 'analytics_exists', 'passed': cursor.fetchone() is not None})
-        
-        # Проверка фактов
-        date_key = int(analytics_date.strftime('%Y%m%d'))
-        cursor.execute("SELECT COUNT(*) FROM fact_orders WHERE date_key = %s", (date_key,))
-        fact_count = cursor.fetchone()[0]
-        validations.append({'check': 'facts_loaded', 'passed': fact_count > 0})
-        
-        # Проверка NULL
-        cursor.execute("""
-            SELECT COUNT(*) FROM fact_orders
-            WHERE date_key = %s AND (customer_key IS NULL OR product_key IS NULL)
-        """, (date_key,))
-        null_count = cursor.fetchone()[0]
-        validations.append({'check': 'no_nulls', 'passed': null_count == 0})
-        
-        for v in validations:
-            if not v['passed']:
-                raise Exception(f"Validation failed: {v['check']}")
-        
-        logger.info("All validations passed")
-        return True
-```
-
----
-
-## 14. Конвейеры генерации тестовых данных
-
-```python
-# dags/generate_test_data_dag.py
-
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
-import random
-import pandas as pd
-import psycopg2
-from pymongo import MongoClient
-
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 12, 1),
-    'retries': 1,
+    'owner': 'student',
+    'email': ['student@example.com'],
+    'email_on_failure': True,       # Уведомление при ошибке
+    'email_on_retry': False,         # Не уведомлять при retry
+    'email_on_success': False,       # Не уведомлять при успехе
+    'retries': 3,
     'retry_delay': timedelta(minutes=5),
 }
-
-def generate_customers():
-    """Генерация тестовых клиентов"""
-    conn = psycopg2.connect(
-        host='postgres-source',
-        database='production_db',
-        user='postgres',
-        password='postgres'
-    )
-    cursor = conn.cursor()
-    
-    first_names = ['Иван', 'Петр', 'Мария', 'Анна', 'Алексей']
-    last_names = ['Иванов', 'Петров', 'Сидоров', 'Смирнов', 'Кузнецов']
-    cities = ['Москва', 'Санкт-Петербург', 'Новосибирск', 'Екатеринбург']
-    
-    for i in range(100):
-        cursor.execute("""
-            INSERT INTO customers (first_name, last_name, email, city, country)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (email) DO NOTHING
-        """, (
-            random.choice(first_names),
-            random.choice(last_names),
-            f'customer{i}@example.com',
-            random.choice(cities),
-            'Россия'
-        ))
-    
-    conn.commit()
-    conn.close()
-    print("Generated 100 test customers")
-
-def generate_orders(**context):
-    """Генерация тестовых заказов"""
-    execution_date = context['execution_date']
-    
-    conn = psycopg2.connect(
-        host='postgres-source',
-        database='production_db',
-        user='postgres',
-        password='postgres'
-    )
-    cursor = conn.cursor()
-    
-    statuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled']
-    payment_methods = ['card', 'cash', 'online']
-    
-    # Генерация 50-100 заказов за день
-    num_orders = random.randint(50, 100)
-    
-    for i in range(num_orders):
-        customer_id = random.randint(1, 100)
-        order_date = execution_date + timedelta(
-            hours=random.randint(0, 23),
-            minutes=random.randint(0, 59)
-        )
-        total_amount = round(random.uniform(10, 5000), 2)
-        
-        cursor.execute("""
-            INSERT INTO orders 
-            (customer_id, order_date, total_amount, status, payment_method)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (customer_id, order_date, total_amount, 
-              random.choice(statuses), random.choice(payment_methods)))
-    
-    conn.commit()
-    conn.close()
-    print(f"Generated {num_orders} test orders for {execution_date.date()}")
-
-def generate_feedback(**context):
-    """Генерация тестовых отзывов"""
-    execution_date = context['execution_date']
-    
-    client = MongoClient('mongodb://mongo:mongo@mongodb:27017/')
-    db = client['feedback_db']
-    collection = db['customer_feedback']
-    
-    comments = [
-        'Отличный сервис!',
-        'Быстрая доставка',
-        'Товар соответствует описанию',
-        'Есть замечания к упаковке',
-        'Долго ждал доставку'
-    ]
-    
-    # Генерация 20-50 отзывов
-    num_feedback = random.randint(20, 50)
-    
-    for i in range(num_feedback):
-        feedback = {
-            'customer_id': random.randint(1, 100),
-            'order_id': random.randint(1, 1000),
-            'rating': round(random.uniform(2.0, 5.0), 1),
-            'comment': random.choice(comments),
-            'feedback_date': execution_date + timedelta(
-                hours=random.randint(0, 23),
-                minutes=random.randint(0, 59)
-            ),
-            'category': random.choice(['delivery', 'product', 'service'])
-        }
-        collection.insert_one(feedback)
-    
-    client.close()
-    print(f"Generated {num_feedback} test feedback for {execution_date.date()}")
-
-def generate_csv_products():
-    """Генерация CSV с продуктами"""
-    today = datetime.now().strftime('%Y%m%d')
-    
-    products = pd.DataFrame({
-        'product_id': range(1, 51),
-        'product_name': [f'Product {i}' for i in range(1, 51)],
-        'category': [random.choice(['Electronics', 'Clothing', 'Books', 'Home']) 
-                     for _ in range(50)],
-        'price': [round(random.uniform(10, 1000), 2) for _ in range(50)],
-        'stock_quantity': [random.randint(0, 500) for _ in range(50)]
-    })
-    
-    filepath = f'/opt/airflow/data/csv/products_{today}.csv'
-    products.to_csv(filepath, index=False)
-    print(f"Generated CSV: {filepath}")
-
-def generate_ftp_delivery_logs(**context):
-    """Генерация логов доставки для FTP"""
-    execution_date = context['execution_date']
-    date_str = execution_date.strftime('%Y%m%d')
-    
-    num_deliveries = random.randint(30, 80)
-    
-    logs = pd.DataFrame({
-        'delivery_id': range(1, num_deliveries + 1),
-        'order_id': [random.randint(1, 1000) for _ in range(num_deliveries)],
-        'courier_id': [random.randint(1, 20) for _ in range(num_deliveries)],
-        'pickup_time': [
-            execution_date + timedelta(hours=random.randint(8, 12))
-            for _ in range(num_deliveries)
-        ],
-        'delivery_time': [
-            execution_date + timedelta(hours=random.randint(13, 20))
-            for _ in range(num_deliveries)
-        ],
-        'status': [random.choice(['delivered', 'failed', 'returned']) 
-                   for _ in range(num_deliveries)]
-    })
-    
-    filepath = f'/opt/airflow/data/ftp/delivery_logs_{date_str}.csv'
-    logs.to_csv(filepath, index=False)
-    print(f"Generated FTP logs: {filepath}")
-
-# Определение DAG
-dag = DAG(
-    'generate_test_data',
-    default_args=default_args,
-    description='Generate test data for all sources',
-    schedule_interval='@daily',
-    catchup=False
-)
-
-# Задачи
-task_customers = PythonOperator(
-    task_id='generate_customers',
-    python_callable=generate_customers,
-    dag=dag
-)
-
-task_orders = PythonOperator(
-    task_id='generate_orders',
-    python_callable=generate_orders,
-    dag=dag
-)
-
-task_feedback = PythonOperator(
-    task_id='generate_feedback',
-    python_callable=generate_feedback,
-    dag=dag
-)
-
-task_csv = PythonOperator(
-    task_id='generate_csv_products',
-    python_callable=generate_csv_products,
-    dag=dag
-)
-
-task_ftp = PythonOperator(
-    task_id='generate_ftp_logs',
-    python_callable=generate_ftp_delivery_logs,
-    dag=dag
-)
-
-# Зависимости
-task_customers >> task_orders >> [task_feedback, task_ftp]
-task_csv
 ```
 
----
+### Метрики для мониторинга
 
-## Критерии оценки дипломной работы
+**1. Производительность:**
 
-### 1. Полнота реализации (35 баллов)
+- Время выполнения DAG
+- Время выполнения каждой задачи
+- Использование памяти
+- Использование CPU
 
-- ✅ Реализация всех 3+ источников данных (8 баллов)
-- ✅ Корректная работа Extract-Transform-Load (10 баллов)
-- ✅ Настроенный Data Warehouse с **SCD Type 2** (12 баллов)
-  - Правильная реализация версионирования (effective_date, expiration_date, is_current)
-  - Корректное закрытие старых версий
-  - Создание новых версий при изменениях
-  - Привязка фактов к правильным версиям измерений
-- ✅ Работающий дашборд (5 баллов)
+**2. Качество данных:**
 
-### 2. Безопасность и управление подключениями (15 баллов)
+- Количество обработанных записей
+- Количество ошибок валидации
+- Процент дубликатов
+- Процент null значений
 
-- ✅ Использование `.env` файла для учетных данных (5 баллов)
-- ✅ `.env` добавлен в `.gitignore`, нет хардкод паролей в коде (3 балла)
-- ✅ Настроены **Airflow Connections** для всех источников (5 баллов)
-- ✅ Код использует Airflow Hooks (`PostgresHook`, `MongoHook`) (2 балла)
+**3. Доступность:**
 
-### 3. Качество кода (25 баллов)
+- Статус подключений к источникам
+- Количество неудачных попыток
+- Задержки в расписании
 
-- ✅ Архитектура и структура проекта (10 баллов)
-- ✅ Обработка ошибок и логирование (8 баллов)
-- ✅ Документация и комментарии (7 баллов)
+**Пример логирования метрик:**
 
-### 4. Настройка Airflow (15 баллов)
-
-- ✅ Корректная структура DAG (8 баллов)
-- ✅ Зависимости и расписание задач (4 балла)
-- ✅ Мониторинг и алерты (3 балла)
-
-### 5. Документация (10 баллов)
-
-- ✅ README с инструкциями по запуску и настройке .env (5 баллов)
-- ✅ Описание архитектуры и решений, включая обоснование использования SCD Type 2 (5 баллов)
+```python
+def log_data_quality_metrics(**context):
+    """Логирование метрик качества в БД."""
+    execution_date = context['execution_date']
+    
+    # Получение метрик из XCom
+    orders_count = context['task_instance'].xcom_pull(
+        key='orders_count', 
+        task_ids='extract_postgres_orders'
+    )
+    
+    # Сохранение в data_quality_metrics
+    insert_quality_metrics(
+        run_date=execution_date,
+        dag_id=context['dag'].dag_id,
+        task_id=context['task'].task_id,
+        source_name='postgres_orders',
+        total_records=orders_count,
+        # ... другие метрики
+    )
+```
 
 ---
 
@@ -1999,22 +1330,99 @@ task_csv
 
 ---
 
-## Дополнительные материалы
+## Критерии оценки дипломной работы
 
-### Полезные ссылки
+### 1. Полнота реализации (35 баллов)
 
-- [Apache Airflow Documentation](https://airflow.apache.org/docs/)
-- [Pandas Documentation](https://pandas.pydata.org/docs/)
-- [PostgreSQL Tutorial](https://www.postgresql.org/docs/)
-- [MongoDB Manual](https://docs.mongodb.com/)
-- [Grafana Documentation](https://grafana.com/docs/)
+- Реализация всех 3+ источников данных (8 баллов)
+- Корректная работа Extract-Transform-Load (10 баллов)
+- Настроенный Data Warehouse с **SCD Type 2** (12 баллов)
+  - Правильная реализация версионирования (effective_date, expiration_date, is_current)
+  - Корректное закрытие старых версий
+  - Создание новых версий при изменениях
+  - Привязка фактов к правильным версиям измерений
+- Работающий дашборд (5 баллов)
 
-### Рекомендуемая литература
+### 2. Безопасность и управление подключениями (15 баллов)
 
-- "Data Pipelines with Apache Airflow" - Bas Harenslak, Julian de Ruiter
-- "The Data Warehouse Toolkit" - Ralph Kimball
-- "Designing Data-Intensive Applications" - Martin Kleppmann
+- Использование `.env` файла для учетных данных (5 баллов)
+- `.env` добавлен в `.gitignore`, нет хардкод паролей в коде (3 балла)
+- Настроены **Airflow Connections** для всех источников (5 баллов)
+- Код использует Airflow Hooks (`PostgresHook`, `MongoHook`) (2 балла)
+
+### 3. Качество кода (25 баллов)
+
+- Архитектура и структура проекта (10 баллов)
+- Обработка ошибок и логирование (8 баллов)
+- Документация и комментарии (7 баллов)
+
+### 4. Настройка Airflow (15 баллов)
+
+- Корректная структура DAG (8 баллов)
+- Зависимости и расписание задач (4 балла)
+- Мониторинг и алерты (3 балла)
+
+### 5. Документация (10 баллов)
+
+- README с инструкциями по запуску и настройке .env (5 баллов)
+- Описание архитектуры и решений, включая обоснование использования SCD Type 2 (5 баллов)
 
 ---
 
-**Удачи в выполнении дипломной работы! 🚀**
+## Полезные ресурсы
+
+### Документация
+
+**Apache Airflow:**
+- [Официальная документация Apache Airflow](https://airflow.apache.org/docs/apache-airflow/2.11.0/)
+- [Best Practices](https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html)
+- [Managing Connections](https://airflow.apache.org/docs/apache-airflow/stable/howto/connection.html)
+- [Pandas Documentation](https://pandas.pydata.org/docs/)
+
+**PostgreSQL:**
+- [PostgreSQL 15 Documentation](https://www.postgresql.org/docs/15/)
+- [PostgreSQL Performance Tips](https://wiki.postgresql.org/wiki/Performance_Optimization)
+
+**MongoDB:**
+- [MongoDB Manual](https://docs.mongodb.com/manual/)
+- [PyMongo Documentation](https://pymongo.readthedocs.io/)
+
+**Data Warehouse:**
+- [Kimball Group - Star Schema](https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/)
+- [SCD Type 2 Explanation](https://en.wikipedia.org/wiki/Slowly_changing_dimension)
+
+**Grafana:**
+- [Grafana Documentation](https://grafana.com/docs/grafana/latest/)
+- [PostgreSQL Data Source](https://grafana.com/docs/grafana/latest/datasources/postgres/)
+
+### Книги
+
+1. **"Data Pipelines with Apache Airflow"** - Bas Harenslak, Julian de Ruiter
+   - Лучшая книга по Airflow
+   - Практические примеры
+   - Best practices
+
+2. **"The Data Warehouse Toolkit"** - Ralph Kimball, Margy Ross
+   - Библия проектирования DWH
+   - Подробно про SCD
+   - Схемы "звезда" и "снежинка"
+
+3. **"Designing Data-Intensive Applications"** - Martin Kleppmann
+   - Архитектура data систем
+   - Паттерны и анти-паттерны
+   - Масштабирование
+
+### Статьи и блоги
+
+- [Apache Airflow Blog](https://airflow.apache.org/blog/)
+- [Kimball Group Blog](https://www.kimballgroup.com/blog/)
+- [dbt Blog - Analytics Engineering](https://blog.getdbt.com/)
+
+### Инструменты для разработки
+
+- **DBeaver** - GUI для работы с БД
+- **Postman** - тестирование API
+- **Docker Desktop** - управление контейнерами
+- **VS Code** - IDE с плагинами для Python
+
+---
