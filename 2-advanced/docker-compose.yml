@@ -45,6 +45,10 @@ services:
       AIRFLOW__WEBSERVER__SECRET_KEY: test-secret-key
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      
+      # для задания
+      AIRFLOW_CONN_SIMPLE_HTTP_DEFAULT: http://jsonplaceholder.typicode.com
+    
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src

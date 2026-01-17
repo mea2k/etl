@@ -1,5 +1,5 @@
 """
-DAG 6: Передача данных между задачами через XCom
+DAG: Передача данных между задачами через XCom
 
 Описание:
 ---------
@@ -15,7 +15,6 @@ start → generate_data → [process_data, calculate_stats] → combine_results 
                                 ↓                                   ↑
                                 └─────── (XCom передача данных) ───┘
 
-Автор: Курс "ETL - Автоматизация подготовки данных с использованием Apache Airflow"
 """
 
 from datetime import datetime, timedelta
@@ -52,9 +51,9 @@ def generate_data(**context):
     """
     logger = logging.getLogger(__name__)
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     logger.info("ГЕНЕРАЦИЯ ДАННЫХ")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     # Генерируем тестовый датасет
     dataset_size = 100
@@ -81,7 +80,7 @@ def generate_data(**context):
     # Способ 1: Автоматическая передача через return
     # Если функция что-то возвращает, это автоматически сохраняется в XCom
     logger.info("\n→ Данные будут переданы через XCom (return)")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     return {
         'data': data,
@@ -95,9 +94,9 @@ def generate_additional_data(**context):
     """
     logger = logging.getLogger(__name__)
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     logger.info("ГЕНЕРАЦИЯ ДОПОЛНИТЕЛЬНЫХ ДАННЫХ")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     # Получаем TaskInstance из контекста
     ti = context['task_instance']
@@ -120,7 +119,7 @@ def generate_additional_data(**context):
     logger.info("  - additional_data")
     logger.info("  - data_type")
     logger.info("  - version")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     return "Additional data generated"
 
@@ -131,9 +130,9 @@ def process_data(**context):
     """
     logger = logging.getLogger(__name__)
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     logger.info("ОБРАБОТКА ДАННЫХ")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     # Получаем TaskInstance из контекста
     ti = context['task_instance']
@@ -179,7 +178,7 @@ def process_data(**context):
     }
     
     logger.info("→ Результаты обработки будут переданы через XCom")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     return processed_result
 
@@ -190,9 +189,9 @@ def calculate_statistics(**context):
     """
     logger = logging.getLogger(__name__)
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     logger.info("ВЫЧИСЛЕНИЕ СТАТИСТИКИ")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     ti = context['task_instance']
     
@@ -230,7 +229,7 @@ def calculate_statistics(**context):
         else:
             logger.info(f"  {key}: {value}")
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     return statistics
 
@@ -242,33 +241,33 @@ def combine_results(**context):
     """
     logger = logging.getLogger(__name__)
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     logger.info("ОБЪЕДИНЕНИЕ РЕЗУЛЬТАТОВ")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     ti = context['task_instance']
     
     # Получаем данные из разных задач
-    logger.info("Получение данных из XCom...")
+    logger.info("  Получение данных из XCom...")
     
     # Данные из generate_data
     raw_data = ti.xcom_pull(task_ids='generate_data')
-    logger.info("✓ Получены исходные данные")
+    logger.info("  Получены исходные данные")
     
     # Результаты обработки
     processed_result = ti.xcom_pull(task_ids='process_data')
-    logger.info("✓ Получены результаты обработки")
+    logger.info("  Получены результаты обработки")
     
     # Статистика
     statistics = ti.xcom_pull(task_ids='calculate_stats')
-    logger.info("✓ Получена статистика")
+    logger.info("  Получена статистика")
     
     # Дополнительные данные (с конкретным ключом)
     additional_data = ti.xcom_pull(task_ids='generate_additional_data', key='additional_data')
     data_type = ti.xcom_pull(task_ids='generate_additional_data', key='data_type')
     
     if additional_data:
-        logger.info("✓ Получены дополнительные данные")
+        logger.info("  Получены дополнительные данные")
         logger.info(f"  Тип: {data_type}")
     
     # Объединяем все результаты
@@ -293,7 +292,7 @@ def combine_results(**context):
     logger.info(f"  Среднее значение: {statistics['mean']:.2f}")
     logger.info(f"  Стандартное отклонение: {statistics['std_dev']:.2f}")
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     return combined
 
@@ -304,9 +303,9 @@ def save_final_report(**context):
     """
     logger = logging.getLogger(__name__)
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     logger.info("СОХРАНЕНИЕ ФИНАЛЬНОГО ОТЧЕТА")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     ti = context['task_instance']
     
@@ -336,7 +335,7 @@ def save_final_report(**context):
     logger.info("Используйте веб-интерфейс: Admin → XCom")
     logger.info("Там вы увидите все переданные данные между задачами")
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     return {
         'status': 'report_saved',
@@ -351,9 +350,9 @@ def demonstrate_xcom_cleanup(**context):
     """
     logger = logging.getLogger(__name__)
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     logger.info("XCOM BEST PRACTICES")
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     ti = context['task_instance']
     
@@ -393,7 +392,7 @@ def demonstrate_xcom_cleanup(**context):
         except Exception as e:
             logger.info(f"  {task_id}: {str(e)}")
     
-    logger.info("=" * 50)
+    logger.info("-" * 50)
     
     return "XCom demonstration complete"
 
