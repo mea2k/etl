@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS daily_business_analytics (
     -- Продукты
     total_products_sold INTEGER DEFAULT 0,
     top_category VARCHAR(100),
+    top_product VARCHAR(255),
     
     -- Веб-метрики
     total_page_views INTEGER DEFAULT 0,
@@ -43,7 +44,17 @@ CREATE TABLE IF NOT EXISTS daily_business_analytics (
 );
 
 -- Индекс по дате
-CREATE INDEX IF NOT EXISTS idx_daily_analytics_date ON daily_business_analytics(analytics_date);
+CREATE INDEX IF NOT EXISTS idx_daily_analytics_date ON daily_business_analytics(analytics_date DESC);
+
+-- Таблица для хранения сырых данных из различных источников
+CREATE TABLE IF NOT EXISTS raw_data_staging (
+    id SERIAL PRIMARY KEY,
+    source_name VARCHAR(50) NOT NULL,
+    source_type VARCHAR(50) NOT NULL,
+    extraction_date TIMESTAMP NOT NULL,
+    data JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Таблица для хранения метрик качества данных
 CREATE TABLE IF NOT EXISTS data_quality_metrics (
@@ -73,6 +84,35 @@ CREATE TABLE IF NOT EXISTS data_quality_metrics (
 
 CREATE INDEX IF NOT EXISTS idx_dq_metrics_run_date ON data_quality_metrics(run_date);
 CREATE INDEX IF NOT EXISTS idx_dq_metrics_source ON data_quality_metrics(source_name);
+
+
+-- Триггер для daily_business_analytics
+CREATE TRIGGER update_analytics_updated_at BEFORE UPDATE ON daily_business_analytics
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+
+-- Представление для быстрого доступа к последним метрикам
+CREATE OR REPLACE VIEW latest_analytics AS
+SELECT * FROM daily_business_analytics
+ORDER BY analytics_date DESC
+LIMIT 30;
+
+-- Представление для агрегации логов ETL
+CREATE OR REPLACE VIEW etl_summary AS
+SELECT 
+    dag_id,
+    task_id,
+    DATE(execution_date) as execution_day,
+    COUNT(*) as total_runs,
+    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful_runs,
+    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_runs,
+    AVG(duration_seconds) as avg_duration_seconds,
+    SUM(records_processed) as total_records_processed
+FROM etl_process_logs
+GROUP BY dag_id, task_id, DATE(execution_date)
+ORDER BY execution_day DESC;
+
+
 
 COMMENT ON TABLE daily_business_analytics IS 'Ежедневная бизнес-аналитика';
 COMMENT ON TABLE data_quality_metrics IS 'Метрики качества данных';

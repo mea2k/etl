@@ -1,0 +1,9 @@
+product_id,name,category,price,stock
+1,Laptop Pro 15,Electronics,1299.99,15
+2,Wireless Mouse,Electronics,29.99,50
+3,Mechanical Keyboard,Electronics,89.99,30
+4,Office Chair,Office,199.99,12
+5,Standing Desk,Office,449.99,8
+6,Python Book,Books,39.99,50
+7,Coffee Maker,Home,79.99,20
+8,Headphones,Electronics,149.99,35

@@ -112,7 +112,7 @@ conn = hook.get_conn()
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                    ИСТОЧНИКИ ДАННЫХ                              │
+│                    ИСТОЧНИКИ ДАННЫХ                             │
 ├──────────────┬──────────────┬──────────────┬────────────────────┤
 │  PostgreSQL  │   MongoDB    │   CSV/FTP    │     REST API       │
 │   (orders,   │  (feedback)  │  (products,  │ (web analytics)    │
@@ -272,152 +272,6 @@ airflow_etl_diploma_project/
 ### Шаг 2: Запуск Docker контейнеров
 
 ```bash
-docker-compose exec airflow-webserver airflow connections add \
-  'postgres_source' \
-  --conn-type 'postgres' \
-  --conn-host "${POSTGRES_SOURCE_HOST}" \
-  --conn-login "${POSTGRES_SOURCE_USER}" \
-  --conn-password "${POSTGRES_SOURCE_PASSWORD}"
-```
-
-### Использование Connections в коде
-
-```python
-from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.providers.mongo.hooks.mongo import MongoHook
-
-def extract_from_postgres(**context):
-    # ПРАВИЛЬНО: Используем Airflow Connection
-    postgres_hook = PostgresHook(postgres_conn_id='postgres_source')
-    conn = postgres_hook.get_conn()
-    
-    # Или получить DataFrame напрямую
-    df = postgres_hook.get_pandas_df("SELECT * FROM orders")
-    return df
-
-def extract_from_mongodb(**context):
-    # ПРАВИЛЬНО: Используем Airflow Connection
-    mongo_hook = MongoHook(conn_id='mongodb')
-    collection = mongo_hook.get_collection('customer_feedback', mongo_db='feedback_db')
-    data = list(collection.find({}))
-    return data
-```
-
-### Обновленные классы Extractors
-
-```python
-# extractors/postgres_extractor.py
-from airflow.providers.postgres.hooks.postgres import PostgresHook
-
-class PostgresExtractor(BaseExtractor):
-    def __init__(self, conn_id: str):
-        self.conn_id = conn_id
-        self.hook = None
-    
-    def connect(self):
-        # Используем Airflow Hook вместо прямого подключения
-        self.hook = PostgresHook(postgres_conn_id=self.conn_id)
-        self.connection = self.hook.get_conn()
-        logger.info(f"Connected via Airflow connection: {self.conn_id}")
-    
-    def extract(self, start_date, end_date):
-        query = "SELECT * FROM orders WHERE order_date >= %s AND order_date < %s"
-        df = self.hook.get_pandas_df(query, parameters=(start_date, end_date))
-        return df.to_dict('records')
-```
-
-### Проверочный список безопасности
-
-**Обязательно:**
-
-- [ ] Файл `.env` создан с переменными
-- [ ] `.env` добавлен в `.gitignore`
-- [ ] Созданы Airflow Connections для всех источников
-- [ ] Код использует Hooks (`PostgresHook`, `MongoHook`)
-- [ ] Нет хардкод паролей в коде
-
-**ЗАПРЕЩЕНО:**
-
-```python
-# Хардкод паролей
-config = {'password': 'my_password_123'}
-
-# ПРАВИЛЬНО
-hook = PostgresHook(postgres_conn_id='postgres_source')
-```
-
----
-
-## 7. Этапы "Загрузка данных" (Extract)
-
-### Процесс извлечения
-
-1. **Инициализация подключений**
-   - Проверка доступности источников
-   - Валидация учетных данных
-   - Установка соединений
-
-2. **Определение временного диапазона**
-
-   ```python
-   execution_date = context['execution_date']
-   start_time = execution_date.replace(hour=0, minute=0, second=0)
-   end_time = start_time + timedelta(days=1)
-   ```
-
-3. **Извлечение из PostgreSQL**
-   - SQL-запрос с фильтром по дате
-   - Пагинация для больших объемов
-   - Сохранение в staging
-
-4. **Извлечение из MongoDB**
-   - Запрос с фильтром по `feedback_date`
-   - Обработка курсора
-   - Конвертация BSON → dict
-
-5. **Загрузка CSV файлов**
-   - Поиск файла по маске `products_YYYYMMDD.csv`
-   - Парсинг CSV
-   - Обработка кодировки UTF-8
-
-6. **Получение с FTP**
-   - Подключение к FTP
-   - Скачивание файлов по маске
-   - Парсинг содержимого
-
-7. **Запрос к REST API**
-   - HTTP GET с параметрами даты
-   - Обработка пагинации
-   - Парсинг JSON
-
-8. **Сохранение raw данных**
-   - Staging область
-   - Метаданные загрузки
-   - Логирование
-
-### Обработка ошибок
-
-- ConnectionError → повторная попытка
-- DataValidationError → логирование и пропуск
-- Exception → остановка pipeline
-
----
-
-## 8. Этапы "Трансформация данных" (Transform)
-
-### 8.1 Очистка данных
-
-**Удаление дубликатов:**
-
-```python
-df = df.drop_duplicates(subset=['order_id'], keep='last')
-```
-
-**Обработка пропусков:**
-
-```python
-df['total_amount'].fillna(0, inplace=True)
-df = df.dropna(subset=['order_id', 'customer_id'])
 # Запуск всех сервисов
 docker compose up -d
 
@@ -433,8 +287,9 @@ docker compose logs -f airflow
 - Airflow web-интерфейс: http://localhost:8080 (admin / admin)
 - PostgreSQL Source: localhost:5433
 - PostgreSQL Analytics: localhost:5434
-- PgAdmin4: http://localhost:5000
+- PgAdmin4: http://localhost:5050
 - MongoDB: localhost:27017
+- Mongo-express (web-интерфейс для Mongo): http://localhost:5051
 - Grafana: http://localhost:3000 (admin / admin)
 
 ### Шаг 3: Инициализация баз данных
@@ -444,10 +299,18 @@ docker compose logs -f airflow
 - `init_source_db.sql` - создает таблицы orders, customers
 - `init_analytics_db.sql` - создает daily_business_analytics
 - `init_dwh.sql` - создает DWH с SCD Type 2
+- `mongo-init.js` - создает коллекции и пользователей в СУБД Mongo
 
 ### Шаг 4: Настройка Airflow Connections
 
-**Автоматически:**
+**Автоматически при запуске контейнера:**
+
+```bash
+# добавить в docker-compose.yml в контейнер airflow запуск команды
+python /opt/airflow/scripts/init_connections.py
+```
+
+**Вручную с использованием скрипта:**
 
 ```bash
 docker compose exec -i airflow python /opt/airflow/scripts/setup_connections.py
@@ -479,44 +342,63 @@ docker compose exec -i airflow python /opt/airflow/scripts/setup_connections.py
 
     **другие (при необходимости)**
 
+### Использование Connections в коде
+
+```python
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.providers.mongo.hooks.mongo import MongoHook
+
+def extract_from_postgres(**context):
+    # ПРАВИЛЬНО: Используем Airflow Connection
+    postgres_hook = PostgresHook(postgres_conn_id='postgres_source')
+    conn = postgres_hook.get_conn()
+    
+    # Или получить DataFrame напрямую
+    df = postgres_hook.get_pandas_df("SELECT * FROM orders")
+    return df
+
+def extract_from_mongodb(**context):
+    # ПРАВИЛЬНО: Используем Airflow Connection
+    mongo_hook = MongoHook(conn_id='mongodb')
+    collection = mongo_hook.get_collection('customer_feedback', mongo_db='feedback_db')
+    data = list(collection.find({}))
+    return data
+```
+
 ### Шаг 5: Запуск DAG
 
 1. Откройте Airflow UI: http://localhost:8080
-2. Найдите DAG `main_etl_pipeline`
+2. Найдите DAG `main_etl_dag`
 3. Включите DAG (toggle в позицию ON)
 4. Нажмите `"Trigger DAG"` для ручного запуска
 
 DAG будет автоматически запускаться каждый день в 9:00 AM.
 
----
-
 ## ETL Pipeline - Детальное описание
 
-### Фаза 1: EXTRACT (Извлечение)
+### Фаза 1: "Извлечение данных" (EXTRACT)
 
-#### 1.1 PostgreSQL
+#### Обновленные классы Extractors
 
-**Таблицы:**
+Предлагается к использованию уже готовые классы Extractors, созданные на базе абстрактного класса `BaseExtractor`:
 
-```sql
--- orders: заказы с датой, суммой, статусом
--- customers: клиенты с контактами и адресами
--- order_items: позиции в заказах с товарами
-```
+- извлечение данных из СУБД Postgres - [postgres_extractor.py](airflow_etl_diploma_project/plugins/extractors/postgres_extractor.py)
+- извлечение данных из СУБД Mongo - [mongo_extractor.py](airflow_etl_diploma_project/plugins/extractors/mongo_extractor.py)
+- извлечение данных из HTTP REST API - [api_extractor.py](airflow_etl_diploma_project/plugins/extractors/api_extractor.py)
+- извлечение данных из FTP-сервера - [ftp_extractor.py](airflow_etl_diploma_project/plugins/extractors/ftp_extractor.py)
+- извлечение данных из CSV-файла - [csv_extractor.py](airflow_etl_diploma_project/plugins/extractors/csv_extractor.py)
 
-**Стратегия извлечения:**
+**ЗАПРЕЩЕНО:**
 
 ```python
-# Инкрементальная загрузка по дате
-extractor = PostgresExtractor(conn_id='postgres_source')
+# Хардкод паролей
+config = {'password': 'my_password_123'}
 
-orders_df = extractor.extract_incremental(
-    table_name='orders',
-    date_column='order_date',
-    start_date='{{ ds }}',  # Airflow macro: execution date
-    end_date='{{ tomorrow_ds }}'  # Следующий день
-)
+# ПРАВИЛЬНО
+hook = PostgresHook(postgres_conn_id='postgres_source')
 ```
+
+#### Стратегия извлечения - инкрементальная загрузка
 
 **Почему инкрементальная загрузка?**
 
@@ -524,70 +406,97 @@ orders_df = extractor.extract_incremental(
 - Экономим ресурсы
 - Быстрее выполняется
 
-#### 1.2 MongoDB
+#### Процесс извлечения
 
-**Коллекция: customer_feedback**
+1. **Инициализация подключений**
+   - Проверка доступности источников
+   - Валидация учетных данных
+   - Установка соединений
 
-```json
-{
-  "_id": "ObjectId(...)",
-  "customer_id": 123,
-  "order_id": 456,
-  "rating": 4.5,
-  "comment": "Отличный сервис!",
-  "feedback_date": "2025-01-13T14:30:00Z",
-  "category": "delivery"
-}
-```
+2. **Определение временного диапазона**
 
-**Стратегия извлечения:**
+   ```python
+   execution_date = context['execution_date']
+   start_time = execution_date.replace(hour=0, minute=0, second=0)
+   end_time = start_time + timedelta(days=1)
+   ```
 
-```python
-extractor = MongoExtractor(
-    conn_id='mongodb_conn',
-    database='feedback_db'
-)
+3. **Извлечение из PostgreSQL**
+   - SQL-запрос с фильтром по дате
+   - Пагинация для больших объемов
+   - Сохранение в staging
 
-feedback_df = extractor.extract_by_date(
-    collection='customer_feedback',
-    date_field='feedback_date',
-    start_date=execution_date,
-    end_date=execution_date + timedelta(days=1)
-)
-```
+    ```python
+    # Инкрементальная загрузка по дате
 
-#### 1.3 CSV
+    # Postgres
+    extractor = PostgresExtractor(conn_id='postgres_source')
+    orders_df = extractor.extract_incremental(
+        table_name='orders',
+        date_column='order_date',
+        start_date='{{ ds }}',  # Airflow macro: execution date
+        end_date='{{ tomorrow_ds }}'  # Следующий день
+    )
+    ```
 
-**Файл: products_YYYYMMDD.csv**
+4. **Извлечение из MongoDB**
+   - Запрос с фильтром по `feedback_date`
+   - Обработка курсора
+   - Конвертация BSON → dict
 
-```csv
-product_id,product_name,category,price,stock_quantity
-1,Laptop Dell,Electronics,1299.99,50
-2,iPhone 15,Electronics,1199.99,120
-```
+    ```
+    # Mongo
+    extractor = MongoExtractor(
+        conn_id='mongodb_conn',
+        database='feedback_db'
+    )
+    feedback_df = extractor.extract_by_date(
+        collection='customer_feedback',
+        date_field='feedback_date',
+        start_date=execution_date,
+        end_date=execution_date + timedelta(days=1)
+    )
 
-**Стратегия:**
+    ```
 
-```python
-extractor = CSVExtractor(base_path='/opt/airflow/data/csv')
+5. **Загрузка CSV файлов**
+   - Поиск файла по маске `products_YYYYMMDD.csv`
+   - Парсинг CSV
+   - Обработка кодировки UTF-8
 
-products_df = extractor.extract(
-    filename=f'products_{execution_date.strftime("%Y%m%d")}.csv'
-)
-```
+    ```python
+    extractor = CSVExtractor(base_path='/opt/airflow/data/csv')
 
-#### 1.4 FTP
+    products_df = extractor.extract(
+        filename=f'products_{execution_date.strftime("%Y%m%d")}.csv'
+    )
+    ```
 
-**Файл: delivery_logs_YYYYMMDD.csv**
+6. **Получение с FTP**
+   - Подключение к FTP
+   - Скачивание файлов по маске
+   - Парсинг содержимого
 
-```csv
-delivery_id,order_id,courier_id,pickup_time,delivery_time,status
-1,1001,25,2025-01-13 09:00:00,2025-01-13 10:30:00,delivered
-```
+7. **Запрос к REST API**
+   - HTTP GET с параметрами даты
+   - Обработка пагинации
+   - Парсинг JSON
 
-### Фаза 2: TRANSFORM (Трансформация)
+8. **Сохранение "сырых" данных (raw)**
+   - Метаданные загрузки
+   - Логирование
 
-#### 2.1 Очистка данных (Data Cleaning)
+#### Обработка ошибок
+
+- ConnectionError → повторная попытка
+- DataValidationError → логирование и пропуск
+- Exception → остановка pipeline
+
+---
+
+### Фаза 2 - "Трансформация данных" (TRANSFORM)
+
+#### Очистка данных
 
 **Задачи:**
 
@@ -595,6 +504,19 @@ delivery_id,order_id,courier_id,pickup_time,delivery_time,status
 - Обработка пропущенных значений
 - Удаление некорректных записей
 - Удаление выбросов
+
+**Удаление дубликатов:**
+
+```python
+df = df.drop_duplicates(subset=['order_id'], keep='last')
+```
+
+**Обработка пропусков:**
+
+```python
+df['total_amount'].fillna(0, inplace=True)
+df = df.dropna(subset=['order_id', 'customer_id'])
+```
 
 <details>
 
@@ -653,386 +575,6 @@ def load_fact_orders(df_facts, conn):
     conn.commit()
 ```
 
-### 9.3 Обновление агрегированных таблиц
-
-```python
-def update_aggregates(analytics_date, conn):
-    # Удаление старых данных
-    conn.execute("DELETE FROM agg_daily_sales WHERE date_key = %s", 
-                (int(analytics_date.strftime('%Y%m%d')),))
-    
-    # Вставка новых агрегатов
-    conn.execute("""
-        INSERT INTO agg_daily_sales
-        SELECT date_key, product_key, customer_segment,
-               COUNT(*) as total_orders, SUM(total_amount) as total_revenue
-        FROM fact_orders f
-        JOIN dim_customers c ON f.customer_key = c.customer_key
-        WHERE f.date_key = %s
-        GROUP BY date_key, product_key, customer_segment
-    """, (int(analytics_date.strftime('%Y%m%d')),))
-    conn.commit()
-```
-
-### 9.4 Валидация загруженных данных
-
-```python
-def validate_loaded_data(analytics_date, conn):
-    validations = []
-    
-    # Проверка наличия записи в аналитике
-    result = conn.execute("""
-        SELECT total_orders FROM daily_business_analytics
-        WHERE analytics_date = %s
-    """, (analytics_date,)).fetchone()
-    validations.append({'check': 'analytics_exists', 'passed': result is not None})
-    
-    # Проверка количества фактов
-    fact_count = conn.execute("""
-        SELECT COUNT(*) FROM fact_orders WHERE date_key = %s
-    """, (int(analytics_date.strftime('%Y%m%d')),)).fetchone()[0]
-    validations.append({'check': 'facts_loaded', 'passed': fact_count > 0})
-    
-    # Проверка отсутствия NULL в критичных полях
-    null_count = conn.execute("""
-        SELECT COUNT(*) FROM fact_orders
-        WHERE date_key = %s AND (customer_key IS NULL OR product_key IS NULL)
-    """, (int(analytics_date.strftime('%Y%m%d')),)).fetchone()[0]
-    validations.append({'check': 'no_nulls', 'passed': null_count == 0})
-    
-    for v in validations:
-        if not v['passed']:
-            raise ValidationError(f"Validation failed: {v['check']}")
-    
-    return True
-```
-
----
-
-## 10. Docker Compose для инфраструктуры
-
-### ВАЖНО: Файловая структура проекта
-
-```
-project/
-├── .env                   # Переменные окружения (НЕ коммитить!)
-├── .env.example           # Пример для документации
-├── .gitignore             # Обязательно добавить .env
-├── docker-compose.yml
-├── dags/
-├── config/
-├── plugins/
-    ├── base/
-    ├── extractors/
-    ├── transformers/
-    ├── loaders/
-    └── utils/
-├── init/
-└── data/
-    ├── raw/
-    └── ready/
-```
-
-### .env.example
-
-```bash
-# PostgreSQL Source
-POSTGRES_SOURCE_USER=postgres
-POSTGRES_SOURCE_PASSWORD=change_me
-POSTGRES_SOURCE_DB=production_db
-
-# PostgreSQL Analytics
-POSTGRES_ANALYTICS_USER=analytics
-POSTGRES_ANALYTICS_PASSWORD=change_me
-POSTGRES_ANALYTICS_DB=analytics_db
-
-# MongoDB
-MONGO_USER=mongo
-MONGO_PASSWORD=change_me
-MONGO_DB=feedback_db
-
-# Airflow Connections
-AIRFLOW_CONN_POSTGRES_SOURCE=postgresql://postgres:change_me@postgres-source:5432/production_db
-AIRFLOW_CONN_POSTGRES_ANALYTICS=postgresql://analytics:change_me@postgres-analytics:5432/analytics_db
-AIRFLOW_CONN_MONGODB=mongodb://mongo:change_me@mongodb:27017/feedback_db
-```
-
-### .gitignore
-
-```gitignore
-# КРИТИЧЕСКИ ВАЖНО!
-.env
-
-# Python
-__pycache__/
-*.pyc
-
-# Airflow
-logs/
-airflow.db
-```
-
-### docker-compose.yml (с .env)
-
-```yaml
-version: '3.8'
-
-services:
-  # Airflow Database
-  postgres-airflow:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
-    volumes:
-      - postgres-airflow-data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-
-  # Airflow Webserver
-  airflow-webserver:
-    image: apache/airflow:2.8.1-python3.10
-    depends_on:
-      - postgres-airflow
-    env_file:
-      - .env  # Подключаем переменные окружения
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      # Connections через переменные окружения из .env
-      AIRFLOW_CONN_POSTGRES_SOURCE: ${AIRFLOW_CONN_POSTGRES_SOURCE}
-      AIRFLOW_CONN_POSTGRES_ANALYTICS: ${AIRFLOW_CONN_POSTGRES_ANALYTICS}
-      AIRFLOW_CONN_MONGODB: ${AIRFLOW_CONN_MONGODB}
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
-      - ./plugins:/opt/airflow/plugins
-      - ./data:/opt/airflow/data
-    ports:
-      - "8080:8080"
-    command: webserver
-
-  # Airflow Scheduler
-  airflow-scheduler:
-    image: apache/airflow:2.8.1-python3.11
-    depends_on:
-      - postgres-airflow
-    env_file:
-      - .env
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
-      AIRFLOW_CONN_POSTGRES_SOURCE: ${AIRFLOW_CONN_POSTGRES_SOURCE}
-      AIRFLOW_CONN_POSTGRES_ANALYTICS: ${AIRFLOW_CONN_POSTGRES_ANALYTICS}
-      AIRFLOW_CONN_MONGODB: ${AIRFLOW_CONN_MONGODB}
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./logs:/opt/airflow/logs
-      - ./plugins:/opt/airflow/plugins
-      - ./data:/opt/airflow/data
-    command: scheduler
-
-  # Source PostgreSQL
-  postgres-source:
-    image: postgres:15
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_SOURCE_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_SOURCE_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_SOURCE_DB}
-    volumes:
-      - postgres-source-data:/var/lib/postgresql/data
-      - ./init-scripts/init-source-db.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-
-  # Analytics PostgreSQL & DWH
-  postgres-analytics:
-    image: postgres:15
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_ANALYTICS_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_ANALYTICS_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_ANALYTICS_DB}
-    volumes:
-      - postgres-analytics-data:/var/lib/postgresql/data
-      - ./init-scripts/init-analytics-db.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5434:5432"
-
-  # MongoDB
-  mongodb:
-    image: mongo:7
-    env_file:
-      - .env
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
-      MONGO_INITDB_DATABASE: ${MONGO_DB}
-    volumes:
-      - mongodb-data:/data/db
-    ports:
-      - "27017:27017"
- 
-  # FTP Server
-  ftp-server:
-    image: fauria/vsftpd
-    environment:
-      FTP_USER: ${FTP_USER}
-      FTP_PASS: ${FTP_PASSWORD}
-    volumes:
-      - ./data/ftp:/home/vsftpd/ftpuser
-    ports:
-      - "21:21"
-      - "21100-21110:21100-21110"
-
-  # Mock REST API
-  mock-api:
-    image: mockserver/mockserver:latest
-    environment:
-      MOCKSERVER_INITIALIZATION_JSON_PATH: /config/initializerJson.json
-    volumes:
-      - ./mock-api/initializerJson.json:/config/initializerJson.json
-    ports:
-      - "1080:1080"
-
-  # Grafana
-  grafana:
-    image: grafana/grafana:latest
-    depends_on:
-      - postgres-analytics
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
-    ports:
-      - "3000:3000"
-
-volumes:
-  postgres-airflow-data:
-  postgres-source-data:
-  postgres-analytics-data:
-  mongodb-data:
-  grafana-data:
-
-networks:
-  default:
-    name: etl-network
-```
-
-### Запуск
-
-```bash
-# 1. Создание .env
-cp .env.example .env
-# Отредактируйте .env с реальными паролями!
-
-# 2. Запуск всей инфраструктуры
-docker-compose up -d
-
-# 3. Проверка Connections
-docker-compose exec airflow-webserver airflow connections list
-
-# Просмотр логов
-docker-compose logs -f airflow-scheduler
-
-# Остановка
-docker-compose down
-
-# Очистка данных
-docker-compose down -v
-```
-
----
-
-## 11. Классы Extractors
-
-### Базовый класс
-
-```python
-# extractors/base_extractor.py
-
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List
-import logging
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-class BaseExtractor(ABC):
-    """Базовый класс для всех экстракторов"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.connection = None
-        
-    @abstractmethod
-    def connect(self):
-        """Установка соединения"""
-        pass
-    
-    @abstractmethod
-    def disconnect(self):
-        """Закрытие соединения"""
-        pass
-    
-    @abstractmethod
-    def extract(self, start_date: datetime, end_date: datetime) -> List[Dict]:
-        """Извлечение данных за период"""
-        pass
-    
-    def __enter__(self):
-        self.connect()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.disconnect()
-```
-
-### PostgreSQL Extractor
-class DataValidator:
-    def validate_orders(self, df: pd.DataFrame) -> tuple:
-        """Возвращает (valid_df, invalid_df, errors)"""
-        errors = []
-        
-        # Проверка обязательных полей
-        required_fields = ['order_id', 'customer_id', 'total_amount']
-        for field in required_fields:
-            if field not in df.columns:
-                errors.append(f"Missing required field: {field}")
-        
-        # Проверка типов
-        if not pd.api.types.is_numeric_dtype(df['total_amount']):
-            errors.append("total_amount must be numeric")
-        
-        # Проверка диапазонов
-        invalid_amount = df[
-            (df['total_amount'] < 0) | (df['total_amount'] > 1000000)
-        ]
-        if len(invalid_amount) > 0:
-            errors.append(f"Found {len(invalid_amount)} records with invalid amount")
-        
-        # Проверка статусов
-        valid_statuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled']
-        invalid_status = df[~df['status'].isin(valid_statuses)]
-        
-        # Разделение на валидные и невалидные
-        valid_mask = (
-            df['total_amount'].between(0, 1000000) &
-            df['status'].isin(valid_statuses)
-        )
-        
-        valid_df = df[valid_mask]
-        invalid_df = df[~valid_mask]
-        
-        return valid_df, invalid_df, errors
-```
-
 </details>
 
 #### 2.3 Нормализация (Data Normalization)
@@ -1044,130 +586,13 @@ class DataValidator:
 - Нормализация строк
 - Приведение числовых значений
 
-<details>
+Пример кода нормализации - [data_normilizer.py](airflow_etl_diploma_project/plugins/transformers/data_normilizer.py)
 
-**<summary>Пример кода NORMALIZAION</summary>**
+#### 2.4 Оценка качества (Data Quality Assessment)
 
+Пример кода оценки качества - [data_quality.py](airflow_etl_diploma_project/plugins/transformers/data_quality.py)
 
-```python
-class DataNormalizer(BaseTransformer):
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Нормализация строк
-        df['country'] = df['country'].str.upper().str.strip()
-        df['city'] = df['city'].str.title().str.strip()
-        df['email'] = df['email'].str.lower().str.strip()
-        
-        # Нормализация телефонов (убрать все кроме цифр)
-        df['phone'] = df['phone'].str.replace(r'\D', '', regex=True)
-        
-        # Стандартизация дат
-        df['order_date'] = pd.to_datetime(df['order_date'])
-        df['order_date'] = df['order_date'].dt.tz_localize(None)
-        
-        # Округление цен
-        df['total_amount'] = df['total_amount'].round(2)
-        
-        return df
-```
-
-</details>
-
-#### 2.4 Обогащение (Data Enrichment)
-
-**Задачи:**
-
-- Добавление вычисляемых полей
-- Обогащение из справочников
-- Категоризация
-- Агрегации
-
-<details>
-
-**<summary>Пример кода ENRICH</summary>**
-
-```python
-class DataEnricher(BaseTransformer):
-    def transform(self, df: pd.DataFrame, products_df: pd.DataFrame = None) -> pd.DataFrame:
-        # Добавление временных характеристик
-        df['order_hour'] = df['order_date'].dt.hour
-        df['order_day_of_week'] = df['order_date'].dt.dayofweek
-        df['is_weekend'] = df['order_day_of_week'].isin([5, 6])
-        df['time_of_day'] = pd.cut(
-            df['order_hour'],
-            bins=[0, 6, 12, 18, 24],
-            labels=['Night', 'Morning', 'Afternoon', 'Evening']
-        )
-        
-        # Категоризация клиентов по сумме заказа
-        df['order_category'] = pd.cut(
-            df['total_amount'],
-            bins=[0, 1000, 5000, 10000, float('inf')],
-            labels=['Small', 'Medium', 'Large', 'VIP']
-        )
-        
-        # Обогащение из справочника продуктов
-        if products_df is not None:
-            df = df.merge(
-                products_df[['product_id', 'category', 'price']],
-                on='product_id',
-                how='left'
-            )
-        
-        # Расчет скидки
-        df['discount'] = (df['original_price'] - df['final_price']) / df['original_price']
-        df['discount_pct'] = (df['discount'] * 100).round(2)
-        
-        return df
-```
-
-</details>
-
-#### 2.5 Оценка качества (Data Quality Assessment)
-
-**Метрики качества:**
-
-<details>
-
-**<summary>Пример кода DATA_QUALITY</summary>**
-
-```python
-def assess_data_quality(df: pd.DataFrame) -> dict:
-    """Оценка качества данных."""
-    
-    total_records = len(df)
-    
-    quality_metrics = {
-        'total_records': total_records,
-        
-        # Completeness (полнота)
-        'completeness': {
-            field: (df[field].notna().sum() / total_records * 100)
-            for field in df.columns
-        },
-        
-        # Uniqueness (уникальность)
-        'uniqueness': {
-            'order_id': (df['order_id'].nunique() / total_records * 100),
-            'customer_id': (df['customer_id'].nunique() / total_records * 100)
-        },
-        
-        # Validity (валидность)
-        'validity': {
-            'valid_emails': (df['email'].str.match(r'^[\w\.-]+@[\w\.-]+\.\w+$').sum() / total_records * 100),
-            'valid_amounts': ((df['total_amount'] > 0).sum() / total_records * 100)
-        },
-        
-        # Consistency (консистентность)
-        'duplicates': df.duplicated(subset=['order_id']).sum(),
-        'null_values': df.isnull().sum().to_dict()
-    }
-    
-    return quality_metrics
-```
-
-</details>
-
-### Фаза 3: LOAD (Загрузка)
+### Фаза 3 - "Загрузка данных" (LOAD)
 
 #### 3.1 Загрузка в аналитическую БД
 
@@ -1478,12 +903,11 @@ fact_id | order_id | customer_key | order_date | ...
 
 ---
 
-
-## 📈 Data Warehouse - Схема "Звезда"
+## Data Warehouse - Схема "Звезда"
 
 ### Структура таблиц
 
-```
+```text
                     ┌──────────────┐
                     │   dim_date   │
                     │  (dimension) │
@@ -1829,7 +1253,7 @@ def log_data_quality_metrics(**context):
 3. Настройка обновления данных
 4. Финальное тестирование
 
-### Этап 7: Документация (1-2 дня)
+### Этап 7: Документация (2-3 дня)
 
 1. Написание README
 2. Документирование API
@@ -1882,24 +1306,29 @@ def log_data_quality_metrics(**context):
 ### Документация
 
 **Apache Airflow:**
+
 - [Официальная документация Apache Airflow](https://airflow.apache.org/docs/apache-airflow/2.11.0/)
 - [Best Practices](https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html)
 - [Managing Connections](https://airflow.apache.org/docs/apache-airflow/stable/howto/connection.html)
 - [Pandas Documentation](https://pandas.pydata.org/docs/)
 
 **PostgreSQL:**
+
 - [PostgreSQL 15 Documentation](https://www.postgresql.org/docs/15/)
 - [PostgreSQL Performance Tips](https://wiki.postgresql.org/wiki/Performance_Optimization)
 
 **MongoDB:**
+
 - [MongoDB Manual](https://docs.mongodb.com/manual/)
 - [PyMongo Documentation](https://pymongo.readthedocs.io/)
 
 **Data Warehouse:**
+
 - [Kimball Group - Star Schema](https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/)
 - [SCD Type 2 Explanation](https://en.wikipedia.org/wiki/Slowly_changing_dimension)
 
 **Grafana:**
+
 - [Grafana Documentation](https://grafana.com/docs/grafana/latest/)
 - [PostgreSQL Data Source](https://grafana.com/docs/grafana/latest/datasources/postgres/)
 

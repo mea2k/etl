@@ -52,7 +52,7 @@ def setup_all_connections():
     """Настройка всех подключений."""
     
     print("Setting up Airflow Connections...")
-    print("=" * 50)
+    print("-" * 50)
     
     total_count = 0
 
@@ -110,7 +110,7 @@ def setup_all_connections():
             extra = {}
         if not extra.get('passive_mode'):
             extra['passive_mode'] = True  # По умолчанию используем passive mode для безопасности
-        if extra.get('encoding'):
+        if not extra.get('encoding'):
             extra['encoding'] = 'utf-8'  # Кодировка по умолчанию
         
         # Если указан путь, добавляем его в extra
@@ -152,7 +152,7 @@ def setup_all_connections():
         total_count += 1
 
     # Итоговое сообщение
-    print("=" * 50)
+    print("-" * 50)
     print(f"All connections setup completed! Total connections: {total_count}")
     print("Verify connections in Airflow UI: 'Admin → Connections'")
 

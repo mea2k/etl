@@ -88,13 +88,13 @@ def generate_test_data_dag():
                         inserted += 1
                         
                 except Exception as e:
-                    logger.warning(f"Failed to insert customer: {e}")
+                    logger.warning(f"  Failed to insert customer: {e}")
             
             conn.commit()
             cursor.close()
             conn.close()
             
-            logger.info(f"✓ Generated {inserted} new customers (attempted {num_customers})")
+            logger.info(f"  Generated {inserted} new customers (attempted {num_customers})")
             
             return {
                 'generated': inserted,
@@ -102,7 +102,7 @@ def generate_test_data_dag():
             }
             
         except Exception as e:
-            logger.error(f"Failed to generate customers: {e}")
+            logger.error(f"  Failed to generate customers: {e}")
             raise
     
     
@@ -519,30 +519,29 @@ def generate_test_data_dag():
         logger = logging.getLogger(__name__)
         
         summary = f"""
-        ═══════════════════════════════════════════════════════════
-        📊 СВОДКА ПО ГЕНЕРАЦИИ ТЕСТОВЫХ ДАННЫХ
-        ═══════════════════════════════════════════════════════════
+        --------------------------------------------------
+        СВОДКА ПО ГЕНЕРАЦИИ ТЕСТОВЫХ ДАННЫХ
+        --------------------------------------------------
         
-        ✅ PostgreSQL (postgres_source):
+        PostgreSQL (postgres_source):
            • Клиенты:          {customers_info['generated']} новых
            • Заказы:           {orders_info['generated']} заказов
            • Дата заказов:     {orders_info['date']}
         
-        ✅ MongoDB (feedback_db):
+        MongoDB (feedback_db):
            • Отзывы:           {feedback_info['generated']} отзывов
            • Доставленных:     {feedback_info.get('total_delivered', 0)} заказов
         
-        ✅ CSV Files:
+        CSV Files:
            • Продукты:         {products_info['generated']} позиций
            • Файл:             {products_info['filepath']}
            • Логи доставки:    {delivery_info['generated']} записей
            • Файл:             {delivery_info['filepath']}
         
-        ═══════════════════════════════════════════════════════════
-        ✓ ГЕНЕРАЦИЯ ЗАВЕРШЕНА УСПЕШНО
-        ═══════════════════════════════════════════════════════════
-        
-        Теперь можно запустить основной DAG 'main_etl_pipeline'
+        --------------------------------------------------
+        ГЕНЕРАЦИЯ ЗАВЕРШЕНА УСПЕШНО
+        --------------------------------------------------
+        Теперь можно запустить основной DAG
         """
         
         logger.info(summary)

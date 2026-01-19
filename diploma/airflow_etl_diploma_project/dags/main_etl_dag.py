@@ -3,9 +3,15 @@
 Запуск: ежедневно в 9:00
 """
 from datetime import datetime, timedelta
+import pandas as pd
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
+
+# --------------------------------------------------
+# ОПРЕДЕЛЕНИЕ КОНВЕЙЕРА (DAG)
+# --------------------------------------------------
 
 # Параметры по умолчанию
 default_args = {
@@ -19,7 +25,7 @@ default_args = {
 
 # Определение DAG
 dag = DAG(
-    'business_analytics_etl',
+    'main_etl',
     default_args=default_args,
     description='ETL pipeline для бизнес-аналитики',
     schedule_interval='0 9 * * *',  # Ежедневно в 9:00
@@ -28,6 +34,14 @@ dag = DAG(
     tags=['etl', 'analytics', 'daily'],
 )
 
+
+# --------------------------------------------------
+# ОПРЕДЕЛЕНИЕ ФУНКЦИЙ ДЛЯ ЗАДАЧ КОНВЕЙЕРА
+# --------------------------------------------------
+
+def empty_callable(**context):
+    """Пустая функция-заглушка"""
+    pass
 
 def extract_from_postgres(**context):
     """Извлечение данных из PostgreSQL"""
@@ -40,7 +54,7 @@ def extract_from_postgres(**context):
     orders = extractor.extract_incremental(
         table_name='orders',
         date_column='order_date',
-        start_date=execution_date.strftime('%Y-%m-%d'),
+        start_date=(execution_date - timedelta(days=1)).strftime('%Y-%m-%d'),
         end_date=execution_date.strftime('%Y-%m-%d')
     )
     
@@ -57,7 +71,7 @@ def extract_from_mongo(**context):
     
     feedback = extractor.extract_by_date(
         'feedback',
-        execution_date.strftime('%Y-%m-%d'),
+        (execution_date - timedelta(days=1)).strftime('%Y-%m-%d'),
         execution_date.strftime('%Y-%m-%d')
     )
     
@@ -69,9 +83,30 @@ def extract_from_csv(**context):
     from extractors.csv_extractor import CSVExtractor
     
     extractor = CSVExtractor(base_path='/opt/airflow/data/csv')
-    products = extractor.extract_latest_file(pattern='products_*.csv')
     
-    return {'products': products, 'count': len(products)}
+    execution_date = context['logical_date']
+
+    # Берём файлы за последние 7 дней, максимум 5 файлов
+    latest_paths = extractor.extract_latest_files(days=7, limit=5)
+    
+    all_data = []
+    for path in latest_paths:
+        print(path.name)  # Печатаем имя файла
+        df = extractor.extract(
+            filename=path.name,
+            encoding='utf-8',
+            delimiter=','
+        )
+        all_data.append(df)
+    
+    # Объединяем все DataFrame
+    combined_df = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+    
+    ti = context['ti']
+    ti.xcom_push(key='latest_files', value=[str(p) for p in latest_paths])
+    ti.xcom_push(key='extracted_count', value=len(combined_df))
+    
+    return {'products': combined_df, 'count': len(combined_df)}
 
 
 def extract_from_api(**context):
@@ -89,13 +124,36 @@ def extract_from_ftp(**context):
     from extractors.ftp_extractor import FTPExtractor
 
     execution_date = context['logical_date']
-    date_str = execution_date.strftime('%Y%m%d')
+    date_str = (execution_date - timedelta(days=1)).strftime('%Y%m%d')
     
     extractor = FTPExtractor('ftp_server')
-    logs = extractor.extract(f'/delivery_logs_{date_str}.csv')
     
-    return {'logs': logs, 'count': len(logs)}
-
+    # 1. Получаем список файлов
+    files = extractor.list_remote_files(
+        directory="/", 
+        pattern="*.csv"  # или "delivery_logs_*.csv"
+    )
+    
+    print(f"Available CSV files on FTP: {files}")
+    
+    if not files:
+        print("No CSV files found on FTP. Skipping.")
+        return {'logs': [], 'count': 0, 'files_found': []}
+    
+    # 2. Берём самый свежий файл (по имени или первый)
+    target_file = files[0]  # первый файл
+    remote_path = f"/{target_file}"
+    
+    # 3. Извлекаем данные
+    logs = extractor.extract(remote_path, file_type='csv')
+    
+    return {
+        'logs': logs, 
+        'count': len(logs), 
+        'file_used': target_file,
+        'files_found': files
+    }    
+    
 
 def validate_data(**context):
     """Валидация извлеченных данных"""
@@ -105,17 +163,22 @@ def validate_data(**context):
     postgres_data = ti.xcom_pull(task_ids='extract_from_postgres')
     mongo_data = ti.xcom_pull(task_ids='extract_from_mongo')
     csv_data = ti.xcom_pull(task_ids='extract_from_csv')
-    
-    print(f"Postgres records: {postgres_data['count']}")
-    print(f"MongoDB records: {mongo_data['count']}")
-    print(f"CSV records: {csv_data['count']}")
+
+    print(f"Postgres records: {postgres_data['count'] if postgres_data is not None else 0}")
+    print(f"MongoDB records: {mongo_data['count'] if mongo_data is not None else 0}")
+    print(f"CSV records: {csv_data['count'] if csv_data is not None else 0}")
     
     return {'status': 'validated'}
 
 
 def transform_data(**context):
     """Трансформация данных"""
-    # TODO: Реализовать трансформацию
+    # TODO: Реализация трансформации
+    # 1. Очистка данных
+    # 2. Валидация
+    # 3. Нормализация
+    # 4. Обогащение
+
     return {'status': 'transformed'}
 
 
@@ -131,7 +194,11 @@ def load_to_dwh(**context):
     return {'status': 'loaded_to_dwh'}
 
 
-# Определение задач
+# --------------------------------------------------
+# ОПРЕДЕЛЕНИЕ ЗАДАЧ
+# --------------------------------------------------
+
+# Начало
 start = EmptyOperator(task_id='start', dag=dag)
 
 extract_postgres = PythonOperator(
@@ -154,7 +221,7 @@ extract_csv = PythonOperator(
 
 extract_api = PythonOperator(
     task_id='extract_from_api',
-    python_callable=extract_from_api,
+    python_callable=extract_from_api, #empty_callable, 
     dag=dag
 )
 
@@ -188,8 +255,12 @@ load_dwh = PythonOperator(
     dag=dag
 )
 
+# Конец
 end = EmptyOperator(task_id='end', dag=dag)
 
+# --------------------------------------------------
+# ОПРЕДЕЛЕНИЕ ПОРЯДКА ВЫПОЛНЕНИЯ ЗАДАЧ
+# --------------------------------------------------
 # Зависимости задач
 start >> [extract_postgres, extract_mongo, extract_csv, extract_api, extract_ftp]
 [extract_postgres, extract_mongo, extract_csv, extract_api, extract_ftp] >> validate

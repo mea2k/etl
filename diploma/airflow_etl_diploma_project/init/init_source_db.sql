@@ -61,15 +61,7 @@ CREATE TRIGGER update_customers_updated_at BEFORE UPDATE ON customers
 CREATE TRIGGER update_orders_updated_at BEFORE UPDATE ON orders
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Вставка тестовых данных
-INSERT INTO customers (first_name, last_name, email, phone, city, country) VALUES
-('Иван', 'Иванов', 'ivan.ivanov@example.com', '+79001234567', 'Москва', 'Россия'),
-('Мария', 'Петрова', 'maria.petrova@example.com', '+79001234568', 'Санкт-Петербург', 'Россия'),
-('Алексей', 'Сидоров', 'alexey.sidorov@example.com', '+79001234569', 'Новосибирск', 'Россия'),
-('Елена', 'Смирнова', 'elena.smirnova@example.com', '+79001234570', 'Екатеринбург', 'Россия'),
-('Дмитрий', 'Кузнецов', 'dmitry.kuznetsov@example.com', '+79001234571', 'Казань', 'Россия')
-ON CONFLICT (email) DO NOTHING;
-
 COMMENT ON TABLE customers IS 'Таблица клиентов интернет-магазина';
 COMMENT ON TABLE orders IS 'Таблица заказов';
 COMMENT ON TABLE order_items IS 'Таблица позиций в заказах';
+

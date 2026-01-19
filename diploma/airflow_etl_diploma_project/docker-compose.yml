@@ -131,7 +131,7 @@ services:
       - airflow-network
 
   # Simple FTP server
-  ftp:
+  ftp-server:
     image: stilliard/pure-ftpd:hardened
     hostname: ${FTP_HOST:-ftp}
     ports:
@@ -142,8 +142,7 @@ services:
       FTP_USER_PASS: ${FTP_PASSWORD:-user}
       FTP_USER_HOME: /home/ftpuser
     volumes:
-      - ftp_data:/home/ftpuser
-      - ./data/csv:/home/ftpuser
+      - ./data/csv:/home/ftpuser/
     restart: always
     networks:
       - airflow-network
@@ -172,7 +171,7 @@ services:
       # PostgreSQL Source
       POSTGRES_SOURCE_HOST: ${POSTGRES_SOURCE_HOST}
       POSTGRES_SOURCE_PORT: ${POSTGRES_SOURCE_PORT}
-      POSTGRES_SOURCE_DATABASE: ${POSTGRES_SOURCE_DATABASE}
+      POSTGRES_SOURCE_DATABASE: ${POSTGRES_SOURCE_DB}
       POSTGRES_SOURCE_USER: ${POSTGRES_SOURCE_USER}
       POSTGRES_SOURCE_PASSWORD: ${POSTGRES_SOURCE_PASSWORD}
       POSTGRES_SOURCE_EXTRA: ${POSTGRES_SOURCE_EXTRA}
@@ -180,7 +179,7 @@ services:
       # PostgreSQL Analytics
       POSTGRES_ANALYTICS_HOST: ${POSTGRES_ANALYTICS_HOST}
       POSTGRES_ANALYTICS_PORT: ${POSTGRES_ANALYTICS_PORT}
-      POSTGRES_ANALYTICS_DATABASE: ${POSTGRES_ANALYTICS_DATABASE}
+      POSTGRES_ANALYTICS_DATABASE: ${POSTGRES_ANALYTICS_DB}
       POSTGRES_ANALYTICS_USER: ${POSTGRES_ANALYTICS_USER}     
       POSTGRES_ANALYTICS_PASSWORD: ${POSTGRES_ANALYTICS_PASSWORD}
       POSTGRES_ANALYTICS_EXTRA: ${POSTGRES_ANALYTICS_EXTRA}
